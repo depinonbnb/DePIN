@@ -38,26 +38,55 @@ Two verification methods:
 ## What's in this repo
 
 ```
-src/
-├── api/            # Backend API endpoints
-├── verification/   # Challenge generation and verification logic
-├── prover/         # Open-source script users run locally
+cmd/
+├── server/         # Main API server
+└── prover/         # Open-source prover script
+
+internal/
+├── api/            # HTTP handlers and routing
+├── challenge/      # Challenge generation
+├── rpc/            # RPC client for talking to nodes
 ├── store/          # Data storage
-├── types/          # TypeScript types
-└── index.ts        # Server entry point
+├── types/          # Type definitions
+└── verification/   # Verification logic
 ```
 
 ## Setup
 
 ```bash
-npm install
-npm run dev
+# Install dependencies
+go mod download
+
+# Run the server
+go run cmd/server/main.go
+
+# Or build it
+go build -o server cmd/server/main.go
+./server
 ```
 
 ## Run the local prover
 
 ```bash
-npm run prover -- --private-key YOUR_KEY --node-rpc http://localhost:8545
+go run cmd/prover/main.go --private-key YOUR_KEY --node-rpc http://localhost:8545
+
+# Or build it
+go build -o prover cmd/prover/main.go
+./prover --private-key YOUR_KEY
+```
+
+## Environment Variables
+
+```bash
+# Server
+PORT=3000
+TRUSTED_RPC=https://bsc-dataseed1.binance.org
+
+# Prover
+PROVER_PRIVATE_KEY=your_key
+NODE_RPC=http://localhost:8545
+DEPIN_API=http://localhost:3000/api
+NODE_TYPE=bsc-full
 ```
 
 ## Website
@@ -72,3 +101,15 @@ Source code is open source: [github.com/depinonbnb/DePIN-Web](https://github.com
 - [Website Source Code](https://github.com/depinonbnb/DePIN-Web)
 - [BNB Chain Node Docs](https://docs.bnbchain.org/bnb-smart-chain/developers/node_operators/full_node/)
 - [opBNB Node Docs](https://docs.bnbchain.org/bnb-opbnb/advanced/local-node/)
+
+## Why Go?
+
+We originally started with TypeScript and considered Rust, but ended up going with Go. Here's why:
+
+- **Simpler code** - Go is easy to read and write. No complex ownership rules or async headaches.
+- **Fast builds** - Compiles in seconds, not minutes.
+- **Single binary** - Just build and run. No node_modules, no runtime dependencies.
+- **Great for networking** - Go was built for this kind of stuff. Goroutines make concurrent RPC calls easy.
+- **go-ethereum** - The official Ethereum/BNB client is written in Go, so the ecosystem is solid.
+
+For a verification system that talks to nodes over RPC, Go hits the sweet spot between simplicity and performance.
