@@ -59,6 +59,7 @@ func SetupRouter(store *store.Store, verifier *verification.Verifier, adminAPIKe
 		{
 			admin.GET("/flagged", handlers.GetFlaggedNodes)
 			admin.POST("/review/:nodeId", handlers.ReviewNode)
+			admin.POST("/test/create-node", handlers.TestCreateNode)
 		}
 	}
 

@@ -507,3 +507,41 @@ func abs(x int64) int64 {
 	}
 	return x
 }
+
+// ==================
+// TEST ENDPOINTS (Admin only)
+// ==================
+
+// POST /admin/test/create-node - Create test node without signature (for testing)
+type TestCreateNodeRequest struct {
+	WalletAddress      string                   `json:"wallet_address" binding:"required"`
+	NodeType           types.NodeType           `json:"node_type" binding:"required"`
+	VerificationMethod types.VerificationMethod `json:"verification_method" binding:"required"`
+	RPCEndpoint        string                   `json:"rpc_endpoint"`
+}
+
+func (h *Handlers) TestCreateNode(c *gin.Context) {
+	var req TestCreateNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing required fields: wallet_address, node_type, verification_method"})
+		return
+	}
+
+	// Register the node without signature verification
+	node := h.store.RegisterNode(
+		strings.ToLower(req.WalletAddress),
+		req.NodeType,
+		req.VerificationMethod,
+		req.RPCEndpoint,
+		"",
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"node_id":      node.ID,
+		"wallet":       node.WalletAddress,
+		"node_type":    node.NodeType,
+		"total_points": node.TotalPoints,
+		"message":      "test node created successfully",
+	})
+}
