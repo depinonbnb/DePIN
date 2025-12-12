@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(store *store.Store, verifier *verification.Verifier) *gin.Engine {
+func SetupRouter(store *store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
 	router := gin.Default()
 
 	// Enable CORS
@@ -36,6 +36,9 @@ func SetupRouter(store *store.Store, verifier *verification.Verifier) *gin.Engin
 		api.GET("/nodes/wallet/:walletAddress", handlers.GetNodesByWallet)
 		api.GET("/nodes/:nodeId/stats", handlers.GetNodeStats)
 
+		// Wallet stats (total points across all nodes)
+		api.GET("/wallet/:walletAddress/stats", handlers.GetWalletStats)
+
 		// Challenges (for local-prover)
 		api.GET("/challenges/request", handlers.RequestChallenge)
 		api.POST("/challenges/submit", handlers.SubmitChallenge)
@@ -47,6 +50,16 @@ func SetupRouter(store *store.Store, verifier *verification.Verifier) *gin.Engin
 		// Public data
 		api.GET("/leaderboard", handlers.GetLeaderboard)
 		api.GET("/stats", handlers.GetNetworkStats)
+
+		// Admin endpoints (protected by API key)
+		admin := api.Group("/admin")
+		if adminAPIKey != "" {
+			admin.Use(AdminAuthMiddleware(adminAPIKey))
+		}
+		{
+			admin.GET("/flagged", handlers.GetFlaggedNodes)
+			admin.POST("/review/:nodeId", handlers.ReviewNode)
+		}
 	}
 
 	return router

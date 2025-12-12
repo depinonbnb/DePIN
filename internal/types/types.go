@@ -11,18 +11,37 @@ const (
 	OpbnbFast   NodeType = "opbnb-fast"
 )
 
-func (n NodeType) BaseRewardPerDay() uint64 {
+// Points users get just for registering a synced node
+func (n NodeType) RegistrationBonus() uint64 {
 	switch n {
 	case BscArchive:
-		return 150
+		return 100 // Archive nodes are hardest to run
 	case BscFull:
-		return 100
+		return 50
 	case BscFast:
-		return 70
-	case OpbnbFull:
-		return 60
-	case OpbnbFast:
 		return 40
+	case OpbnbFull:
+		return 40
+	case OpbnbFast:
+		return 30
+	default:
+		return 0
+	}
+}
+
+// Base points per hour of uptime (multiplied by bandwidth tier)
+func (n NodeType) PointsPerHour() uint64 {
+	switch n {
+	case BscArchive:
+		return 10
+	case BscFull:
+		return 6
+	case BscFast:
+		return 4
+	case OpbnbFull:
+		return 4
+	case OpbnbFast:
+		return 3
 	default:
 		return 0
 	}
@@ -69,6 +88,16 @@ const (
 	SyncStatus   ChallengeType = "sync-status"
 )
 
+// Anti-cheat status
+type CheatStatus string
+
+const (
+	StatusClean    CheatStatus = "clean"     // No issues
+	StatusWarning  CheatStatus = "warning"   // Suspicious activity detected
+	StatusFlagged  CheatStatus = "flagged"   // Needs manual review by admin
+	StatusBanned   CheatStatus = "banned"    // Confirmed cheating
+)
+
 // A registered node
 type NodeRegistration struct {
 	ID                    string             `json:"id"`
@@ -79,11 +108,18 @@ type NodeRegistration struct {
 	AuthToken             string             `json:"auth_token,omitempty"`
 	RegisteredAt          int64              `json:"registered_at"`
 	LastVerifiedAt        int64              `json:"last_verified_at"`
-	TotalUptimeSeconds    uint64             `json:"total_uptime_seconds"`
+	LastHeartbeatAt       int64              `json:"last_heartbeat_at"`
 	TotalChallengesPassed uint64             `json:"total_challenges_passed"`
 	TotalChallengesFailed uint64             `json:"total_challenges_failed"`
-	RewardTier            uint8              `json:"reward_tier"`
+	TotalUptimeMinutes    uint64             `json:"total_uptime_minutes"`
+	TotalPoints           uint64             `json:"total_points"`
 	IsActive              bool               `json:"is_active"`
+
+	// Anti-cheat
+	CheatStatus      CheatStatus `json:"cheat_status"`
+	WarningCount     uint8       `json:"warning_count"`
+	CheatReason      string      `json:"cheat_reason,omitempty"`
+	SuspiciousEvents []string    `json:"suspicious_events,omitempty"`
 }
 
 // Challenge we send to nodes
@@ -119,6 +155,8 @@ type VerificationResult struct {
 	Passed         bool   `json:"passed"`
 	ResponseTimeMs uint64 `json:"response_time_ms"`
 	FailureReason  string `json:"failure_reason,omitempty"`
+	Suspicious     bool   `json:"suspicious"`
+	SuspiciousNote string `json:"suspicious_note,omitempty"`
 	Timestamp      int64  `json:"timestamp"`
 }
 
@@ -134,12 +172,23 @@ type HeartbeatRecord struct {
 
 // Stats for a node
 type NodeStats struct {
-	NodeID             string  `json:"node_id"`
-	UptimePercent      float64 `json:"uptime_percent"`
-	ChallengePassRate  float64 `json:"challenge_pass_rate"`
-	AverageLatencyMs   float64 `json:"average_latency_ms"`
-	TotalRewardsEarned string  `json:"total_rewards_earned"`
-	CurrentStreak      uint64  `json:"current_streak"`
+	NodeID             string      `json:"node_id"`
+	TotalPoints        uint64      `json:"total_points"`
+	TotalUptimeMinutes uint64      `json:"total_uptime_minutes"`
+	TotalUptimeHours   float64     `json:"total_uptime_hours"`
+	ChallengePassRate  float64     `json:"challenge_pass_rate"`
+	AverageLatencyMs   float64     `json:"average_latency_ms"`
+	CheatStatus        CheatStatus `json:"cheat_status"`
+	WarningCount       uint8       `json:"warning_count"`
+}
+
+// Wallet-level stats (user can have multiple nodes)
+type WalletStats struct {
+	WalletAddress string `json:"wallet_address"`
+	TotalPoints   uint64 `json:"total_points"`
+	TotalNodes    int    `json:"total_nodes"`
+	ActiveNodes   int    `json:"active_nodes"`
+	FlaggedNodes  int    `json:"flagged_nodes"`
 }
 
 // Latency limits for anti-cheat

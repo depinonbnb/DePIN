@@ -111,23 +111,30 @@ func (v *Verifier) VerifyResponse(response *types.ChallengeResponse) *types.Veri
 			Passed:         false,
 			ResponseTimeMs: response.ResponseTimeMs,
 			FailureReason:  "response too slow",
+			Suspicious:     true,
+			SuspiciousNote: "Response took too long - possible proxy or offline node",
 			Timestamp:      now,
 		}
 	}
 
-	// Flag slow responses but don't fail them
-	if response.ResponseTimeMs > types.LatencySuspiciousMin {
-		log.Printf("suspicious latency: %dms - might be proxying to public RPC", response.ResponseTimeMs)
-	}
-
 	// They passed!
 	v.deleteChallenge(response.ChallengeID)
+
+	// Flag slow responses but still pass them (suspicious but not failed)
+	suspicious := response.ResponseTimeMs > types.LatencySuspiciousMin
+	suspiciousNote := ""
+	if suspicious {
+		suspiciousNote = fmt.Sprintf("High latency %dms - might be proxying to public RPC", response.ResponseTimeMs)
+		log.Printf("suspicious latency for node %s: %dms", response.NodeID, response.ResponseTimeMs)
+	}
 
 	return &types.VerificationResult{
 		ChallengeID:    response.ChallengeID,
 		NodeID:         response.NodeID,
 		Passed:         true,
 		ResponseTimeMs: response.ResponseTimeMs,
+		Suspicious:     suspicious,
+		SuspiciousNote: suspiciousNote,
 		Timestamp:      now,
 	}
 }

@@ -199,6 +199,19 @@ func (h *Handlers) GetNodesByWallet(c *gin.Context) {
 	c.JSON(http.StatusOK, safeNodes)
 }
 
+// GET /wallet/:walletAddress/stats
+func (h *Handlers) GetWalletStats(c *gin.Context) {
+	wallet := strings.ToLower(c.Param("walletAddress"))
+	stats := h.store.GetWalletStats(wallet)
+
+	if stats == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "wallet not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
 // GET /nodes/:nodeId/stats
 func (h *Handlers) GetNodeStats(c *gin.Context) {
 	nodeID := c.Param("nodeId")
@@ -355,44 +368,53 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 	nodes := h.store.GetAllActiveNodes()
 
 	type LeaderboardEntry struct {
-		NodeID            string           `json:"node_id"`
-		WalletAddress     string           `json:"wallet_address"`
-		NodeType          types.NodeType   `json:"node_type"`
-		UptimePercent     float64          `json:"uptime_percent"`
-		ChallengePassRate float64          `json:"challenge_pass_rate"`
-		CurrentStreak     uint64           `json:"current_streak"`
-		RegisteredAt      int64            `json:"registered_at"`
+		Rank               int              `json:"rank"`
+		NodeID             string           `json:"node_id"`
+		WalletAddress      string           `json:"wallet_address"`
+		NodeType           types.NodeType   `json:"node_type"`
+		TotalPoints        uint64           `json:"total_points"`
+		TotalUptimeHours   float64          `json:"total_uptime_hours"`
+		ChallengePassRate  float64          `json:"challenge_pass_rate"`
+		RegisteredAt       int64            `json:"registered_at"`
 	}
 
 	entries := make([]LeaderboardEntry, 0, len(nodes))
 	for _, node := range nodes {
+		// Don't show banned nodes on leaderboard
+		if node.CheatStatus == types.StatusBanned {
+			continue
+		}
+
 		stats := h.store.GetNodeStats(node.ID)
 		entry := LeaderboardEntry{
-			NodeID:        node.ID,
-			WalletAddress: node.WalletAddress,
-			NodeType:      node.NodeType,
-			RegisteredAt:  node.RegisteredAt,
+			NodeID:             node.ID,
+			WalletAddress:      node.WalletAddress,
+			NodeType:           node.NodeType,
+			TotalPoints:        node.TotalPoints,
+			TotalUptimeHours:   float64(node.TotalUptimeMinutes) / 60.0,
+			RegisteredAt:       node.RegisteredAt,
 		}
 		if stats != nil {
-			entry.UptimePercent = stats.UptimePercent
 			entry.ChallengePassRate = stats.ChallengePassRate
-			entry.CurrentStreak = stats.CurrentStreak
 		}
 		entries = append(entries, entry)
 	}
 
-	// Sort by uptime (simple bubble sort for now)
+	// Sort by total points (highest first)
 	for i := 0; i < len(entries); i++ {
 		for j := i + 1; j < len(entries); j++ {
-			if entries[j].UptimePercent > entries[i].UptimePercent {
+			if entries[j].TotalPoints > entries[i].TotalPoints {
 				entries[i], entries[j] = entries[j], entries[i]
 			}
 		}
 	}
 
-	// Limit to 100
+	// Add ranks and limit to 100
 	if len(entries) > 100 {
 		entries = entries[:100]
+	}
+	for i := range entries {
+		entries[i].Rank = i + 1
 	}
 
 	c.JSON(http.StatusOK, entries)
@@ -414,6 +436,68 @@ func (h *Handlers) GetNetworkStats(c *gin.Context) {
 		"total_nodes": len(nodes),
 		"by_type":     byType,
 		"by_method":   byMethod,
+	})
+}
+
+// ==================
+// ADMIN ENDPOINTS
+// ==================
+
+// GET /admin/flagged - Get all nodes that need review
+func (h *Handlers) GetFlaggedNodes(c *gin.Context) {
+	flagged := h.store.GetFlaggedNodes()
+
+	// Don't expose auth tokens
+	safeNodes := make([]types.NodeRegistration, len(flagged))
+	for i, node := range flagged {
+		safeNodes[i] = *node
+		safeNodes[i].AuthToken = ""
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"count": len(safeNodes),
+		"nodes": safeNodes,
+	})
+}
+
+// POST /admin/review/:nodeId - Admin reviews a flagged node
+type ReviewRequest struct {
+	Action string `json:"action" binding:"required"` // "clear", "warn", "ban"
+	Reason string `json:"reason"`
+}
+
+func (h *Handlers) ReviewNode(c *gin.Context) {
+	nodeID := c.Param("nodeId")
+
+	var req ReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action required (clear, warn, or ban)"})
+		return
+	}
+
+	var status types.CheatStatus
+	switch req.Action {
+	case "clear":
+		status = types.StatusClean
+	case "warn":
+		status = types.StatusWarning
+	case "ban":
+		status = types.StatusBanned
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid action - use clear, warn, or ban"})
+		return
+	}
+
+	if !h.store.SetNodeCheatStatus(nodeID, status, req.Reason) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"node_id": nodeID,
+		"status":  status,
+		"message": fmt.Sprintf("Node status set to %s", status),
 	})
 }
 

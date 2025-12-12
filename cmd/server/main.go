@@ -26,11 +26,18 @@ func main() {
 		trustedRPC = "https://bsc-dataseed1.binance.org"
 	}
 
+	adminAPIKey := os.Getenv("ADMIN_API_KEY")
+
 	fmt.Println("============================================================")
 	fmt.Println("DePIN BNB Verification Server")
 	fmt.Println("============================================================")
 	fmt.Printf("Trusted RPC: %s\n", trustedRPC)
 	fmt.Printf("Port: %s\n", port)
+	if adminAPIKey != "" {
+		fmt.Println("Admin API Key: [configured]")
+	} else {
+		fmt.Println("Admin API Key: [NOT SET - admin endpoints unprotected!]")
+	}
 	fmt.Println("============================================================")
 
 	// Initialize components
@@ -49,7 +56,7 @@ func main() {
 	}()
 
 	// Setup router
-	router := api.SetupRouter(nodeStore, verifier)
+	router := api.SetupRouter(nodeStore, verifier, adminAPIKey)
 
 	fmt.Println("")
 	fmt.Println("Endpoints:")

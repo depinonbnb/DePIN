@@ -27,20 +27,7 @@ func NewStore() *Store {
 	}
 }
 
-func (s *Store) getRewardTier(nodeType types.NodeType) uint8 {
-	switch nodeType {
-	case types.BscArchive:
-		return 4
-	case types.BscFull:
-		return 3
-	case types.BscFast, types.OpbnbFull:
-		return 2
-	default:
-		return 1
-	}
-}
-
-// Register a new node
+// Register a new node - gives registration bonus points
 func (s *Store) RegisterNode(walletAddress string, nodeType types.NodeType, method types.VerificationMethod, rpcEndpoint, authToken string) *types.NodeRegistration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -53,8 +40,12 @@ func (s *Store) RegisterNode(walletAddress string, nodeType types.NodeType, meth
 		RPCEndpoint:        rpcEndpoint,
 		AuthToken:          authToken,
 		RegisteredAt:       time.Now().UnixMilli(),
-		RewardTier:         s.getRewardTier(nodeType),
 		IsActive:           true,
+		TotalPoints:        nodeType.RegistrationBonus(), // Bonus for registering!
+		TotalUptimeMinutes: 0,
+		CheatStatus:        types.StatusClean,
+		WarningCount:       0,
+		SuspiciousEvents:   []string{},
 	}
 
 	s.nodes[node.ID] = node
@@ -113,7 +104,7 @@ func (s *Store) UpdateNode(nodeID string, updates func(*types.NodeRegistration))
 	return node
 }
 
-// Record verification result
+// Record verification result and award points
 func (s *Store) RecordVerificationResult(result *types.VerificationResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,6 +127,32 @@ func (s *Store) RecordVerificationResult(result *types.VerificationResult) {
 			node.TotalChallengesFailed++
 		}
 		node.LastVerifiedAt = result.Timestamp
+
+		// Track suspicious activity
+		if result.Suspicious {
+			event := result.SuspiciousNote
+			if event == "" {
+				event = "Suspicious verification detected"
+			}
+			node.SuspiciousEvents = append(node.SuspiciousEvents,
+				time.Now().Format("2006-01-02 15:04")+": "+event)
+
+			// Keep only last 20 events
+			if len(node.SuspiciousEvents) > 20 {
+				node.SuspiciousEvents = node.SuspiciousEvents[1:]
+			}
+
+			node.WarningCount++
+
+			// Escalate based on warning count
+			if node.WarningCount >= 5 {
+				node.CheatStatus = types.StatusFlagged
+				node.CheatReason = "Multiple suspicious activities - needs manual review"
+			} else if node.WarningCount >= 2 {
+				node.CheatStatus = types.StatusWarning
+				node.CheatReason = event
+			}
+		}
 	}
 }
 
@@ -195,23 +212,9 @@ func (s *Store) GetNodeStats(nodeID string) *types.NodeStats {
 	}
 
 	verifications := s.verificationHistory[nodeID]
-	heartbeats := s.heartbeats[nodeID]
-
-	// Calculate uptime from last 24 hours
-	last24h := time.Now().UnixMilli() - 24*60*60*1000
-	recentHeartbeats := 0
-	for _, h := range heartbeats {
-		if h.Timestamp >= last24h {
-			recentHeartbeats++
-		}
-	}
-	expectedHeartbeats := float64(24 * 60 / 5) // Every 5 minutes
-	uptimePercent := float64(recentHeartbeats) / expectedHeartbeats * 100
-	if uptimePercent > 100 {
-		uptimePercent = 100
-	}
 
 	// Challenge pass rate
+	last24h := time.Now().UnixMilli() - 24*60*60*1000
 	recentVerifications := 0
 	recentPassed := 0
 	var totalLatency uint64
@@ -231,22 +234,149 @@ func (s *Store) GetNodeStats(nodeID string) *types.NodeStats {
 		avgLatency = float64(totalLatency) / float64(recentVerifications)
 	}
 
-	// Calculate streak
-	streak := uint64(0)
-	for i := len(verifications) - 1; i >= 0; i-- {
-		if verifications[i].Passed {
-			streak++
-		} else {
-			break
+	return &types.NodeStats{
+		NodeID:             node.ID,
+		TotalPoints:        node.TotalPoints,
+		TotalUptimeMinutes: node.TotalUptimeMinutes,
+		TotalUptimeHours:   float64(node.TotalUptimeMinutes) / 60.0,
+		ChallengePassRate:  passRate,
+		AverageLatencyMs:   avgLatency,
+		CheatStatus:        node.CheatStatus,
+		WarningCount:       node.WarningCount,
+	}
+}
+
+// Get total points for a wallet (across all their nodes)
+func (s *Store) GetWalletStats(walletAddress string) *types.WalletStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nodeIDs := s.nodesByWallet[walletAddress]
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+
+	var totalPoints uint64
+	activeNodes := 0
+	flaggedNodes := 0
+
+	for _, nodeID := range nodeIDs {
+		if node, ok := s.nodes[nodeID]; ok {
+			totalPoints += node.TotalPoints
+			if node.IsActive {
+				activeNodes++
+			}
+			if node.CheatStatus == types.StatusFlagged || node.CheatStatus == types.StatusWarning {
+				flaggedNodes++
+			}
 		}
 	}
 
-	return &types.NodeStats{
-		NodeID:             node.ID,
-		UptimePercent:      uptimePercent,
-		ChallengePassRate:  passRate,
-		AverageLatencyMs:   avgLatency,
-		TotalRewardsEarned: "0",
-		CurrentStreak:      streak,
+	return &types.WalletStats{
+		WalletAddress: walletAddress,
+		TotalPoints:   totalPoints,
+		TotalNodes:    len(nodeIDs),
+		ActiveNodes:   activeNodes,
+		FlaggedNodes:  flaggedNodes,
 	}
+}
+
+// Award points for uptime - call this periodically (every 5 minutes)
+// Also tracks uptime minutes
+func (s *Store) AwardUptimePoints(nodeID string, minutesOnline uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok || !node.IsActive {
+		return
+	}
+
+	// Don't award points to flagged/banned nodes
+	if node.CheatStatus == types.StatusFlagged || node.CheatStatus == types.StatusBanned {
+		return
+	}
+
+	node.TotalUptimeMinutes += minutesOnline
+	node.LastHeartbeatAt = time.Now().UnixMilli()
+
+	// Award points based on uptime (per hour rate, divided by 12 for 5-min intervals)
+	// So if PointsPerHour is 6, they get 0.5 points per 5 minutes
+	pointsPerInterval := node.NodeType.PointsPerHour() / 12
+	if pointsPerInterval < 1 {
+		pointsPerInterval = 1
+	}
+	node.TotalPoints += pointsPerInterval
+}
+
+// Add a suspicious event to a node
+func (s *Store) AddSuspiciousEvent(nodeID string, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return
+	}
+
+	// Add to suspicious events list
+	event := time.Now().Format("2006-01-02 15:04") + ": " + reason
+	node.SuspiciousEvents = append(node.SuspiciousEvents, event)
+
+	// Keep only last 20 events
+	if len(node.SuspiciousEvents) > 20 {
+		node.SuspiciousEvents = node.SuspiciousEvents[1:]
+	}
+
+	node.WarningCount++
+
+	// Escalate status based on warning count
+	if node.WarningCount >= 5 {
+		node.CheatStatus = types.StatusFlagged
+		node.CheatReason = "Multiple suspicious activities detected - needs manual review"
+	} else if node.WarningCount >= 2 {
+		node.CheatStatus = types.StatusWarning
+		node.CheatReason = reason
+	}
+}
+
+// Get all nodes that need admin review
+func (s *Store) GetFlaggedNodes() []*types.NodeRegistration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	flagged := make([]*types.NodeRegistration, 0)
+	for _, node := range s.nodes {
+		if node.CheatStatus == types.StatusFlagged || node.CheatStatus == types.StatusWarning {
+			flagged = append(flagged, node)
+		}
+	}
+	return flagged
+}
+
+// Admin action: clear warnings or ban a node
+func (s *Store) SetNodeCheatStatus(nodeID string, status types.CheatStatus, reason string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return false
+	}
+
+	node.CheatStatus = status
+	node.CheatReason = reason
+
+	// If cleared, reset warning count
+	if status == types.StatusClean {
+		node.WarningCount = 0
+		node.SuspiciousEvents = []string{}
+	}
+
+	// If banned, deactivate
+	if status == types.StatusBanned {
+		node.IsActive = false
+	}
+
+	return true
 }
