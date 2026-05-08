@@ -4,11 +4,11 @@ package types
 type NodeType string
 
 const (
-	BscFull     NodeType = "bsc-full"
-	BscFast     NodeType = "bsc-fast"
-	BscArchive  NodeType = "bsc-archive"
-	OpbnbFull   NodeType = "opbnb-full"
-	OpbnbFast   NodeType = "opbnb-fast"
+	BscFull    NodeType = "bsc-full"
+	BscFast    NodeType = "bsc-fast"
+	BscArchive NodeType = "bsc-archive"
+	OpbnbFull  NodeType = "opbnb-full"
+	OpbnbFast  NodeType = "opbnb-fast"
 )
 
 // Points users get just for registering a synced node
@@ -73,8 +73,8 @@ func (n NodeType) ChallengeFrequencyMinutes() uint64 {
 type VerificationMethod string
 
 const (
-	ExposedRPC   VerificationMethod = "exposed-rpc"
-	LocalProver  VerificationMethod = "local-prover"
+	ExposedRPC  VerificationMethod = "exposed-rpc"
+	LocalProver VerificationMethod = "local-prover"
 )
 
 // Types of challenges we send
@@ -92,10 +92,10 @@ const (
 type CheatStatus string
 
 const (
-	StatusClean    CheatStatus = "clean"     // No issues
-	StatusWarning  CheatStatus = "warning"   // Suspicious activity detected
-	StatusFlagged  CheatStatus = "flagged"   // Needs manual review by admin
-	StatusBanned   CheatStatus = "banned"    // Confirmed cheating
+	StatusClean   CheatStatus = "clean"   // No issues
+	StatusWarning CheatStatus = "warning" // Suspicious activity detected
+	StatusFlagged CheatStatus = "flagged" // Needs manual review by admin
+	StatusBanned  CheatStatus = "banned"  // Confirmed cheating
 )
 
 // A registered node
@@ -193,8 +193,8 @@ type WalletStats struct {
 
 // Latency limits for anti-cheat
 const (
-	LatencyLocalNode      uint64 = 100   // Local nodes respond in under 100ms
-	LatencySuspiciousMin  uint64 = 150   // Anything over this is suspicious
-	LatencyPublicRPC      uint64 = 300   // Public RPCs typically take 300ms+
-	LatencyMaxAllowed     uint64 = 5000  // Timeout after this
+	LatencyLocalNode     uint64 = 100  // Local nodes respond in under 100ms
+	LatencySuspiciousMin uint64 = 150  // Anything over this is suspicious
+	LatencyPublicRPC     uint64 = 300  // Public RPCs typically take 300ms+
+	LatencyMaxAllowed    uint64 = 5000 // Timeout after this
 )

@@ -1,20 +1,95 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/depinonbnb/depin/internal/api"
 	"github.com/depinonbnb/depin/internal/store"
+	"github.com/depinonbnb/depin/internal/store/memory"
+	"github.com/depinonbnb/depin/internal/store/sqlite"
 	"github.com/depinonbnb/depin/internal/verification"
 	"github.com/joho/godotenv"
 )
 
+// defaultSQLiteDSN is the on-disk DSN we apply when DATABASE_URL/DB_PATH are
+// unset. It enables WAL mode, a 5s busy_timeout, foreign-key enforcement,
+// NORMAL synchronous level, and turns BEGIN into BEGIN IMMEDIATE so writer
+// lock acquisition is deterministic (see docs/design/persistence.md §6).
+const defaultSQLiteDSN = "file:./data/depin.db" +
+	"?_pragma=journal_mode(WAL)" +
+	"&_pragma=busy_timeout(5000)" +
+	"&_pragma=foreign_keys(ON)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_txlock=immediate"
+
+// configureLogger initializes the global slog logger from env:
+//   - LOG_FORMAT=json selects the JSON handler (default: text)
+//   - LOG_LEVEL=debug|info|warn|error sets the level (default: info)
+func configureLogger() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info", "":
+		level = slog.LevelInfo
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "json") {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(handler))
+}
+
+// resolveStoreBackend reads DATABASE_URL (preferred) and DB_PATH (legacy fallback
+// from ADR-0006) and decides which store to construct. Returns the constructed
+// Store and a human-readable description for logging.
+func resolveStoreBackend() (store.Store, string, error) {
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		dsn = strings.TrimSpace(os.Getenv("DB_PATH"))
+	}
+
+	switch dsn {
+	case "":
+		// No explicit DSN: use SQLite at the default path. Operators who want
+		// the volatile in-memory backend can set DATABASE_URL=memory.
+		s, err := sqlite.NewSQLite(defaultSQLiteDSN)
+		if err != nil {
+			return nil, "", err
+		}
+		return s, "sqlite (default: ./data/depin.db)", nil
+	case "memory":
+		return memory.NewMemory(), "memory (volatile)", nil
+	default:
+		s, err := sqlite.NewSQLite(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		return s, "sqlite (" + dsn + ")", nil
+	}
+}
+
 func main() {
 	// Load .env file if it exists
-	godotenv.Load()
+	_ = godotenv.Load()
+
+	configureLogger()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -27,53 +102,88 @@ func main() {
 	}
 
 	adminAPIKey := os.Getenv("ADMIN_API_KEY")
-
-	fmt.Println("============================================================")
-	fmt.Println("DePIN BNB Verification Server")
-	fmt.Println("============================================================")
-	fmt.Printf("Trusted RPC: %s\n", trustedRPC)
-	fmt.Printf("Port: %s\n", port)
-	if adminAPIKey != "" {
-		fmt.Println("Admin API Key: [configured]")
-	} else {
-		fmt.Println("Admin API Key: [NOT SET - admin endpoints unprotected!]")
+	adminStatus := "configured"
+	if adminAPIKey == "" {
+		adminStatus = "disabled"
 	}
-	fmt.Println("============================================================")
 
-	// Initialize components
-	nodeStore := store.NewStore()
+	nodeStore, backendDescription, err := resolveStoreBackend()
+	if err != nil {
+		slog.Error("failed to initialize store backend", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("DePIN BNB Verification Server starting",
+		"port", port,
+		"trusted_rpc", trustedRPC,
+		"admin_status", adminStatus,
+		"store_backend", backendDescription,
+	)
+	if adminAPIKey == "" {
+		slog.Warn("admin endpoints disabled — ADMIN_API_KEY not configured")
+	}
+
 	verifier := verification.NewVerifier(trustedRPC)
 
-	// Start cleanup goroutine
+	// Set up signal-driven shutdown context. Use signal.NotifyContext so the
+	// returned context is cancelled on SIGINT/SIGTERM and we can drive
+	// graceful shutdown of both the HTTP server and the store.
+	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+
+	// Start cleanup goroutine for expired challenges; tied to shutdownCtx so it
+	// exits cleanly on signal.
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
-		for range ticker.C {
-			cleaned := verifier.CleanupExpiredChallenges()
-			if cleaned > 0 {
-				log.Printf("cleaned up %d expired challenges", cleaned)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-shutdownCtx.Done():
+				return
+			case <-ticker.C:
+				cleaned := verifier.CleanupExpiredChallenges()
+				if cleaned > 0 {
+					slog.Info("cleaned up expired challenges", "count", cleaned)
+				}
 			}
 		}
 	}()
 
-	// Setup router
 	router := api.SetupRouter(nodeStore, verifier, adminAPIKey)
 
-	fmt.Println("")
-	fmt.Println("Endpoints:")
-	fmt.Println("  POST /api/nodes/register     - Register a new node")
-	fmt.Println("  GET  /api/nodes/:id          - Get node details")
-	fmt.Println("  GET  /api/nodes/:id/stats    - Get node statistics")
-	fmt.Println("  GET  /api/challenges/request - Request a challenge")
-	fmt.Println("  POST /api/challenges/submit  - Submit challenge response")
-	fmt.Println("  POST /api/verify/:id         - Verify exposed-rpc node")
-	fmt.Println("  GET  /api/leaderboard        - Get top nodes")
-	fmt.Println("  GET  /api/stats              - Get network stats")
-	fmt.Println("============================================================")
-	fmt.Println("Server ready!")
-	fmt.Println("")
-
-	// Start server
-	if err := router.Run(":" + port); err != nil {
-		log.Fatalf("failed to start server: %v", err)
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		slog.Info("server ready", "addr", ":"+port)
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		slog.Error("server failed", "error", err)
+		_ = nodeStore.Close()
+		os.Exit(1)
+	case <-shutdownCtx.Done():
+		slog.Info("shutdown signal received")
+	}
+
+	// Graceful shutdown: give the server up to 10s to finish in-flight
+	// requests, then close the store.
+	gracefulCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(gracefulCtx); err != nil {
+		slog.Error("server shutdown failed", "error", err)
+	}
+	if err := nodeStore.Close(); err != nil {
+		slog.Error("store close failed", "error", err)
+	}
+	slog.Info("shutdown complete")
 }

@@ -3,13 +3,22 @@
 .DS_Store
 .claude/
 
-
-
 # Go
 bin/
 server
 prover
 *.exe
+server.exe
+server.exe~
+*~
 
+# Local notes / scratch
 info.md
+rem.txt
 
+# SQLite (Phase 1 persistence per ADR-0006)
+data.db
+data.db-shm
+data.db-wal
+data.db-journal
+data/

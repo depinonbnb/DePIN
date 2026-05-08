@@ -114,7 +114,7 @@ func (p *Prover) Start() error {
 
 	// Start the proof loop
 	p.running = true
-	fmt.Println("\nStarting proof loop...\n")
+	fmt.Println("\nStarting proof loop...")
 
 	for p.running {
 		if err := p.submitProof(); err != nil {

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,11 +16,11 @@ import (
 )
 
 type Handlers struct {
-	store    *store.Store
+	store    store.Store
 	verifier *verification.Verifier
 }
 
-func NewHandlers(store *store.Store, verifier *verification.Verifier) *Handlers {
+func NewHandlers(store store.Store, verifier *verification.Verifier) *Handlers {
 	return &Handlers{
 		store:    store,
 		verifier: verifier,
@@ -71,17 +73,9 @@ type VerifyResponse struct {
 
 // Verify wallet signature
 func (h *Handlers) verifySignature(message, signature, expectedAddress string) bool {
-	// Remove 0x prefix if present
-	sig := strings.TrimPrefix(signature, "0x")
-
-	sigBytes := make([]byte, 65)
-	for i := 0; i < 65; i++ {
-		var b byte
-		_, err := hexToByte(sig[i*2:i*2+2], &b)
-		if err != nil {
-			return false
-		}
-		sigBytes[i] = b
+	sigBytes, err := hex.DecodeString(strings.TrimPrefix(signature, "0x"))
+	if err != nil || len(sigBytes) != 65 {
+		return false
 	}
 
 	// Ethereum signatures have v = 27 or 28, but we need 0 or 1
@@ -101,23 +95,6 @@ func (h *Handlers) verifySignature(message, signature, expectedAddress string) b
 
 	recoveredAddress := crypto.PubkeyToAddress(*pubKey).Hex()
 	return strings.EqualFold(recoveredAddress, expectedAddress)
-}
-
-func hexToByte(s string, b *byte) (int, error) {
-	n := 0
-	for _, c := range s {
-		n *= 16
-		switch {
-		case '0' <= c && c <= '9':
-			n += int(c - '0')
-		case 'a' <= c && c <= 'f':
-			n += int(c - 'a' + 10)
-		case 'A' <= c && c <= 'F':
-			n += int(c - 'A' + 10)
-		}
-	}
-	*b = byte(n)
-	return 2, nil
 }
 
 // ==================
@@ -368,14 +345,14 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 	nodes := h.store.GetAllActiveNodes()
 
 	type LeaderboardEntry struct {
-		Rank               int              `json:"rank"`
-		NodeID             string           `json:"node_id"`
-		WalletAddress      string           `json:"wallet_address"`
-		NodeType           types.NodeType   `json:"node_type"`
-		TotalPoints        uint64           `json:"total_points"`
-		TotalUptimeHours   float64          `json:"total_uptime_hours"`
-		ChallengePassRate  float64          `json:"challenge_pass_rate"`
-		RegisteredAt       int64            `json:"registered_at"`
+		Rank              int            `json:"rank"`
+		NodeID            string         `json:"node_id"`
+		WalletAddress     string         `json:"wallet_address"`
+		NodeType          types.NodeType `json:"node_type"`
+		TotalPoints       uint64         `json:"total_points"`
+		TotalUptimeHours  float64        `json:"total_uptime_hours"`
+		ChallengePassRate float64        `json:"challenge_pass_rate"`
+		RegisteredAt      int64          `json:"registered_at"`
 	}
 
 	entries := make([]LeaderboardEntry, 0, len(nodes))
@@ -387,12 +364,12 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 
 		stats := h.store.GetNodeStats(node.ID)
 		entry := LeaderboardEntry{
-			NodeID:             node.ID,
-			WalletAddress:      node.WalletAddress,
-			NodeType:           node.NodeType,
-			TotalPoints:        node.TotalPoints,
-			TotalUptimeHours:   float64(node.TotalUptimeMinutes) / 60.0,
-			RegisteredAt:       node.RegisteredAt,
+			NodeID:           node.ID,
+			WalletAddress:    node.WalletAddress,
+			NodeType:         node.NodeType,
+			TotalPoints:      node.TotalPoints,
+			TotalUptimeHours: float64(node.TotalUptimeMinutes) / 60.0,
+			RegisteredAt:     node.RegisteredAt,
 		}
 		if stats != nil {
 			entry.ChallengePassRate = stats.ChallengePassRate
@@ -401,13 +378,9 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 	}
 
 	// Sort by total points (highest first)
-	for i := 0; i < len(entries); i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].TotalPoints > entries[i].TotalPoints {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
-		}
-	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].TotalPoints > entries[j].TotalPoints
+	})
 
 	// Add ranks and limit to 100
 	if len(entries) > 100 {

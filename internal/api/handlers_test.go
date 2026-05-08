@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/depinonbnb/depin/internal/store"
+	"github.com/depinonbnb/depin/internal/store/memory"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/depinonbnb/depin/internal/verification"
 	"github.com/gin-gonic/gin"
@@ -17,8 +17,8 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
-func setupTestRouter(adminKey string) (*gin.Engine, *store.Store) {
-	s := store.NewStore()
+func setupTestRouter(adminKey string) (*gin.Engine, *memory.MemoryStore) {
+	s := memory.NewMemory()
 	v := verification.NewVerifier("https://bsc-dataseed1.binance.org")
 	router := SetupRouter(s, v, adminKey)
 	return router, s

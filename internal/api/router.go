@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(store *store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
+func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
 	router := gin.Default()
 
 	// Enable CORS
@@ -51,11 +51,11 @@ func SetupRouter(store *store.Store, verifier *verification.Verifier, adminAPIKe
 		api.GET("/leaderboard", handlers.GetLeaderboard)
 		api.GET("/stats", handlers.GetNetworkStats)
 
-		// Admin endpoints (protected by API key)
+		// Admin endpoints (protected by API key).
+		// AdminAuthMiddleware fails closed when adminAPIKey is empty
+		// (returns 503), so it MUST always be applied.
 		admin := api.Group("/admin")
-		if adminAPIKey != "" {
-			admin.Use(AdminAuthMiddleware(adminAPIKey))
-		}
+		admin.Use(AdminAuthMiddleware(adminAPIKey))
 		{
 			admin.GET("/flagged", handlers.GetFlaggedNodes)
 			admin.POST("/review/:nodeId", handlers.ReviewNode)

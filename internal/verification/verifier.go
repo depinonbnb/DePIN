@@ -3,7 +3,7 @@ package verification
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -125,7 +125,10 @@ func (v *Verifier) VerifyResponse(response *types.ChallengeResponse) *types.Veri
 	suspiciousNote := ""
 	if suspicious {
 		suspiciousNote = fmt.Sprintf("High latency %dms - might be proxying to public RPC", response.ResponseTimeMs)
-		log.Printf("suspicious latency for node %s: %dms", response.NodeID, response.ResponseTimeMs)
+		slog.Warn("suspicious latency",
+			"node_id", response.NodeID,
+			"response_time_ms", response.ResponseTimeMs,
+		)
 	}
 
 	return &types.VerificationResult{
