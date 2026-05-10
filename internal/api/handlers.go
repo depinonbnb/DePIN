@@ -15,11 +15,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Handlers carries the dependencies every HTTP handler shares: the persistence
+// store and the verifier. Methods on Handlers are split across several files
+// in this package (admin_handlers.go, challenge_handlers.go, verify_handlers.go)
+// to keep each file under the project's 500-LOC cap. The router (router.go)
+// wires them all up.
 type Handlers struct {
 	store    store.Store
 	verifier *verification.Verifier
 }
 
+// NewHandlers constructs a Handlers value bound to the given store and verifier.
 func NewHandlers(store store.Store, verifier *verification.Verifier) *Handlers {
 	return &Handlers{
 		store:    store,
@@ -27,7 +33,7 @@ func NewHandlers(store store.Store, verifier *verification.Verifier) *Handlers {
 	}
 }
 
-// Request/Response types
+// RegisterRequest is the body of POST /nodes/register.
 type RegisterRequest struct {
 	WalletAddress      string                   `json:"wallet_address" binding:"required"`
 	NodeType           types.NodeType           `json:"node_type" binding:"required"`
@@ -38,40 +44,16 @@ type RegisterRequest struct {
 	Timestamp          int64                    `json:"timestamp" binding:"required"`
 }
 
+// RegisterResponse is returned from POST /nodes/register.
 type RegisterResponse struct {
 	Success bool   `json:"success"`
 	NodeID  string `json:"node_id"`
 	Message string `json:"message"`
 }
 
-type ChallengeRequestResponse struct {
-	Challenge  ChallengePublic `json:"challenge"`
-	ServerTime int64           `json:"server_time"`
-}
-
-type ChallengePublic struct {
-	ID            string                `json:"id"`
-	ChallengeType types.ChallengeType   `json:"challenge_type"`
-	Params        types.ChallengeParams `json:"params"`
-	ExpiresAt     int64                 `json:"expires_at"`
-}
-
-type SubmitChallengeRequest struct {
-	ChallengeID    string `json:"challenge_id" binding:"required"`
-	NodeID         string `json:"node_id" binding:"required"`
-	Answer         string `json:"answer" binding:"required"`
-	Signature      string `json:"signature" binding:"required"`
-	ResponseTimeMs uint64 `json:"response_time_ms"`
-	Timestamp      int64  `json:"timestamp" binding:"required"`
-}
-
-type VerifyResponse struct {
-	Passed         bool   `json:"passed"`
-	FailureReason  string `json:"failure_reason,omitempty"`
-	ResponseTimeMs uint64 `json:"response_time_ms"`
-}
-
-// Verify wallet signature
+// verifySignature checks that a hex-encoded EIP-191 secp256k1 signature was
+// produced by the wallet at expectedAddress over the given message. Returns
+// false on any decoding / recovery failure.
 func (h *Handlers) verifySignature(message, signature, expectedAddress string) bool {
 	sigBytes, err := hex.DecodeString(strings.TrimPrefix(signature, "0x"))
 	if err != nil || len(sigBytes) != 65 {
@@ -122,8 +104,10 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 		return
 	}
 
-	// Verify signature
-	message := "Register node\nWallet: " + req.WalletAddress + "\nType: " + string(req.NodeType) + "\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp)
+	// Verify signature.
+	message := "Register node\nWallet: " + req.WalletAddress +
+		"\nType: " + string(req.NodeType) +
+		"\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp)
 	if !h.verifySignature(message, req.Signature, req.WalletAddress) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
@@ -203,140 +187,6 @@ func (h *Handlers) GetNodeStats(c *gin.Context) {
 }
 
 // ==================
-// CHALLENGES
-// ==================
-
-// GET /challenges/request
-func (h *Handlers) RequestChallenge(c *gin.Context) {
-	nodeID := c.Query("nodeId")
-	if nodeID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "nodeId required"})
-		return
-	}
-
-	node := h.store.GetNode(nodeID)
-	if node == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
-		return
-	}
-
-	if !node.IsActive {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "node is not active"})
-		return
-	}
-
-	challenge, err := h.verifier.CreateChallenge(node)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create challenge"})
-		return
-	}
-
-	c.JSON(http.StatusOK, ChallengeRequestResponse{
-		Challenge: ChallengePublic{
-			ID:            challenge.ID,
-			ChallengeType: challenge.ChallengeType,
-			Params:        challenge.Params,
-			ExpiresAt:     challenge.ExpiresAt,
-		},
-		ServerTime: time.Now().UnixMilli(),
-	})
-}
-
-// POST /challenges/submit
-func (h *Handlers) SubmitChallenge(c *gin.Context) {
-	var req SubmitChallengeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing required fields"})
-		return
-	}
-
-	node := h.store.GetNode(req.NodeID)
-	if node == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
-		return
-	}
-
-	// Verify signature
-	message := "Challenge Response\nID: " + req.ChallengeID + "\nAnswer: " + req.Answer + "\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp)
-	if !h.verifySignature(message, req.Signature, node.WalletAddress) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-		return
-	}
-
-	// Verify the response
-	result := h.verifier.VerifyResponse(&types.ChallengeResponse{
-		ChallengeID:    req.ChallengeID,
-		NodeID:         req.NodeID,
-		Answer:         req.Answer,
-		Signature:      req.Signature,
-		ResponseTimeMs: req.ResponseTimeMs,
-		Timestamp:      req.Timestamp,
-	})
-
-	h.store.RecordVerificationResult(result)
-
-	c.JSON(http.StatusOK, VerifyResponse{
-		Passed:         result.Passed,
-		FailureReason:  result.FailureReason,
-		ResponseTimeMs: result.ResponseTimeMs,
-	})
-}
-
-// ==================
-// DIRECT VERIFICATION
-// ==================
-
-// POST /verify/:nodeId
-func (h *Handlers) VerifyNode(c *gin.Context) {
-	nodeID := c.Param("nodeId")
-	node := h.store.GetNode(nodeID)
-
-	if node == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
-		return
-	}
-
-	if node.VerificationMethod != types.ExposedRPC {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "node is not using exposed-rpc method"})
-		return
-	}
-
-	result := h.verifier.VerifyExposedRPC(node)
-	h.store.RecordVerificationResult(result)
-
-	c.JSON(http.StatusOK, VerifyResponse{
-		Passed:         result.Passed,
-		FailureReason:  result.FailureReason,
-		ResponseTimeMs: result.ResponseTimeMs,
-	})
-}
-
-// GET /verify/:nodeId/heartbeat
-func (h *Handlers) CheckHeartbeat(c *gin.Context) {
-	nodeID := c.Param("nodeId")
-	node := h.store.GetNode(nodeID)
-
-	if node == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
-		return
-	}
-
-	if node.VerificationMethod != types.ExposedRPC {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "node is not using exposed-rpc method"})
-		return
-	}
-
-	heartbeat := h.verifier.CheckHeartbeat(node)
-	if heartbeat == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "node unreachable"})
-		return
-	}
-
-	h.store.RecordHeartbeat(heartbeat)
-	c.JSON(http.StatusOK, heartbeat)
-}
-
-// ==================
 // PUBLIC DATA
 // ==================
 
@@ -409,112 +259,5 @@ func (h *Handlers) GetNetworkStats(c *gin.Context) {
 		"total_nodes": len(nodes),
 		"by_type":     byType,
 		"by_method":   byMethod,
-	})
-}
-
-// ==================
-// ADMIN ENDPOINTS
-// ==================
-
-// GET /admin/flagged - Get all nodes that need review
-func (h *Handlers) GetFlaggedNodes(c *gin.Context) {
-	flagged := h.store.GetFlaggedNodes()
-
-	// Don't expose auth tokens
-	safeNodes := make([]types.NodeRegistration, len(flagged))
-	for i, node := range flagged {
-		safeNodes[i] = *node
-		safeNodes[i].AuthToken = ""
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"count": len(safeNodes),
-		"nodes": safeNodes,
-	})
-}
-
-// POST /admin/review/:nodeId - Admin reviews a flagged node
-type ReviewRequest struct {
-	Action string `json:"action" binding:"required"` // "clear", "warn", "ban"
-	Reason string `json:"reason"`
-}
-
-func (h *Handlers) ReviewNode(c *gin.Context) {
-	nodeID := c.Param("nodeId")
-
-	var req ReviewRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action required (clear, warn, or ban)"})
-		return
-	}
-
-	var status types.CheatStatus
-	switch req.Action {
-	case "clear":
-		status = types.StatusClean
-	case "warn":
-		status = types.StatusWarning
-	case "ban":
-		status = types.StatusBanned
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid action - use clear, warn, or ban"})
-		return
-	}
-
-	if !h.store.SetNodeCheatStatus(nodeID, status, req.Reason) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"node_id": nodeID,
-		"status":  status,
-		"message": fmt.Sprintf("Node status set to %s", status),
-	})
-}
-
-func abs(x int64) int64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-// ==================
-// TEST ENDPOINTS (Admin only)
-// ==================
-
-// POST /admin/test/create-node - Create test node without signature (for testing)
-type TestCreateNodeRequest struct {
-	WalletAddress      string                   `json:"wallet_address" binding:"required"`
-	NodeType           types.NodeType           `json:"node_type" binding:"required"`
-	VerificationMethod types.VerificationMethod `json:"verification_method" binding:"required"`
-	RPCEndpoint        string                   `json:"rpc_endpoint"`
-}
-
-func (h *Handlers) TestCreateNode(c *gin.Context) {
-	var req TestCreateNodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing required fields: wallet_address, node_type, verification_method"})
-		return
-	}
-
-	// Register the node without signature verification
-	node := h.store.RegisterNode(
-		strings.ToLower(req.WalletAddress),
-		req.NodeType,
-		req.VerificationMethod,
-		req.RPCEndpoint,
-		"",
-	)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":      true,
-		"node_id":      node.ID,
-		"wallet":       node.WalletAddress,
-		"node_type":    node.NodeType,
-		"total_points": node.TotalPoints,
-		"message":      "test node created successfully",
 	})
 }

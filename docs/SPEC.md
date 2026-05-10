@@ -38,10 +38,10 @@ The on-chain side (staking, points, node-registry contracts) lives elsewhere and
                              │         │
               ┌──────────────▼──┐   ┌──▼─────────────────────┐
               │ TRUSTED_RPC      │   │  Operator's BNB node   │
-              │ (BSC mainnet     │   │  + cmd/prover (CLI)    │
-              │  reference)      │   │  via signed proofs OR  │
-              └──────────────────┘   │  exposed JSON-RPC      │
-                                     └────────────────────────┘
+              │ (BSC / opBNB     │   │  + cmd/prover (CLI)    │
+              │  reference       │   │  via signed proofs OR  │
+              │  endpoint)       │   │  exposed JSON-RPC      │
+              └──────────────────┘   └────────────────────────┘
 ```
 
 Single-binary Go service (`cmd/server`). A separate binary (`cmd/prover`) is shipped to operators who don't want to expose their node's RPC publicly; it polls challenges from the API, queries the local node, signs the result, and submits.
@@ -63,6 +63,13 @@ internal/
     generator.go        Builds 5 challenge types per node-type difficulty
   rpc/
     client.go           JSON-RPC client for BSC / opBNB nodes
+  scheduler/
+    scheduler.go        Three-ticker bundle (heartbeat / challenge / uptime),
+                        shared worker-pool semaphore, ctx-driven shutdown
+    heartbeat.go        Heartbeat ticker (per ADR-0007)
+    challenge.go        Per-tier challenge dispatcher
+    uptime.go           Uptime reward ticker (wakes AwardUptimePoints)
+    scheduler_test.go
   store/
     store.go            In-memory thread-safe store for nodes, challenges,
                         heartbeats, verification history
@@ -141,7 +148,7 @@ Two interchangeable paths produce the same `VerificationResult`:
 
 Server holds a public RPC URL for the node. On a challenge cycle:
 1. Pick a challenge type (block-hash, block-data, sync-status, balance, tx-receipt)
-2. Query both `TRUSTED_RPC` (truth) and the node's RPC (claim)
+2. Query the trusted RPC (truth) and the node's RPC (claim)
 3. Compare. Record latency.
 4. Apply anti-cheat thresholds (see §7)
 
@@ -150,10 +157,17 @@ Server holds a public RPC URL for the node. On a challenge cycle:
 Operator runs `cmd/prover`. Loop:
 1. `GET /challenges/request` → JSON challenge
 2. Query the local node (via `NODE_RPC`, default `localhost:8545`)
-3. Sign `(challengeID || answer || timestamp)` with `PROVER_PRIVATE_KEY`
+3. Sign the message
+   ```
+   Challenge Response
+   ID: <challenge id>
+   Answer: <answer>
+   Timestamp: <unix-ms>
+   ```
+   with `PROVER_PRIVATE_KEY`
 4. `POST /challenges/submit` with the signed response
 
-Server verifies the signature corresponds to the registered wallet, then compares the answer against `TRUSTED_RPC`.
+Server verifies the signature corresponds to the registered wallet, then compares the answer against the trusted RPC.
 
 Both paths use EIP-191 prefixed messages.
 
@@ -176,15 +190,34 @@ Warnings accumulate; after a threshold the node is flagged for admin review. Dec
 | Var | Default | Used by | Notes |
 |---|---|---|---|
 | `PORT` | `3000` | server | The frontend assumes `3001` — see gap #3 |
-| `TRUSTED_RPC` | `https://bsc-dataseed1.binance.org` | server | Truth source for comparisons |
-| `ADMIN_API_KEY` | (empty) | server | If empty, admin endpoints are open. **Set in prod.** |
+| `TRUSTED_RPC` | `https://bsc-dataseed1.binance.org` | server | Reference BSC/opBNB RPC the verifier compares operator answers against |
+| `ADMIN_API_KEY` | (empty) | server | **If empty, admin endpoints return 503** ("admin endpoints disabled"). Always set in prod — see gap #2 |
 | `PROVER_PRIVATE_KEY` | (none) | prover | Operator's wallet key |
 | `NODE_RPC` | `http://localhost:8545` | prover | Operator's local node RPC |
 | `DEPIN_API` | `http://localhost:3000/api` | prover | Server URL |
 | `NODE_TYPE` | `bsc-full` | prover | Self-declared node type |
 | `INTERVAL` | `300000` | prover | Submit interval in ms (5 min) |
+| `SCHEDULER_ENABLED` | `true` | server | Set to `false`/`0`/`no`/`off` to construct schedulers without starting their tickers (used by tests and local dev) — see §8a |
+| `HEARTBEAT_INTERVAL` | `5m` | server | Cadence for the heartbeat ticker (Go duration syntax) |
+| `CHALLENGE_CHECK_INTERVAL` | `1m` | server | Cadence for the challenge dispatcher's outer loop. Per-node challenge cadence is `NodeType.ChallengeFrequencyMinutes()` |
+| `REWARD_INTERVAL` | `5m` | server | Cadence for the uptime-reward ticker (calls `AwardUptimePoints`) |
+| `RPC_WORKERS` | `50` | server | Upper bound on concurrent outbound RPC operations across all three schedulers |
 
 `.env.example` is the authoritative list — keep it in sync when env vars change.
+
+## 8a. Schedulers (Phase 2, ADR-0007)
+
+Three server-side tickers run as goroutines inside `cmd/server/main.go`, all driven by a single `context.Context` so SIGINT/SIGTERM cancels them cleanly. They share one bounded worker pool (a buffered semaphore channel of size `RPC_WORKERS`) so total outbound RPC concurrency is one number, not three.
+
+| Ticker | Default interval | Env override | Job |
+|---|---|---|---|
+| heartbeat | 5m | `HEARTBEAT_INTERVAL` | For each active exposed-RPC node (skipping `banned`), call `verifier.CheckHeartbeat`. On success, persist a `HeartbeatRecord` |
+| challenge | 1m loop | `CHALLENGE_CHECK_INTERVAL` | For each active exposed-RPC node whose `now - LastVerifiedAt > NodeType.ChallengeFrequencyMinutes() * 60_000`, run `verifier.VerifyExposedRPC` and persist the result. Local-prover nodes are NOT dispatched — they continue to pull via `GET /challenges/request` |
+| uptime | 5m | `REWARD_INTERVAL` | For each active node with at least one heartbeat in the last `RewardInterval + buffer`, call `store.AwardUptimePoints(nodeID, RewardInterval/time.Minute)`. Banned/flagged nodes are pre-filtered to keep log counters accurate |
+
+Lifecycle: `scheduler.New(store, verifier, cfg)` builds the bundle (no goroutines yet); `Start()` launches all three; `Close()` cancels their context and waits for in-flight workers to drain. `Close` is idempotent. When `SCHEDULER_ENABLED=false`, `main.go` constructs the scheduler but skips `Start()` so the same wiring works in tests that don't want background ticking.
+
+Shutdown order (per ADR-0007): HTTP listener first (stop accepting), schedulers second (stop generating work), store last (so any in-flight reward writes still have a destination).
 
 ## 9. Known gaps
 
@@ -194,19 +227,24 @@ Warnings accumulate; after a threshold the node is flagged for admin review. Dec
 | 2 | `internal/api/middleware.go` | RESOLVED (Phase 0 hygiene) — `AdminAuthMiddleware` is now always applied. When `ADMIN_API_KEY` is empty it fails closed with 503 ("admin endpoints disabled"). Key comparison uses `crypto/subtle.ConstantTimeCompare` to defeat timing attacks |
 | 3 | `cmd/server/main.go` | Default port 3000 conflicts with the frontend's expected 3001. Pick one and align both projects |
 | 4 | `internal/verification/verifier.go` | Anti-cheat is latency-based only; no statistical anomaly detection |
-| 5 | (none) | No background scheduler issuing challenges automatically — currently challenge cycle is request-driven by the prover. May need cron loop for exposed-RPC nodes |
-| 6 | (none) | No actual reward distribution. Points are tracked but not claimable on-chain |
-| 7 | (none) | No rate limiting per node or per wallet |
+| 5 | `internal/scheduler/` | RESOLVED (Phase 2 — ADR-0007) — three server-side tickers now drive verification: heartbeat (every `HEARTBEAT_INTERVAL`, default 5m), challenge dispatcher (every `CHALLENGE_CHECK_INTERVAL`, default 1m, gated per-node by `NodeType.ChallengeFrequencyMinutes()`), and uptime reward (every `REWARD_INTERVAL`, default 5m, calling `AwardUptimePoints` and finally retiring that dead-code path). All three share a single semaphore-bounded worker pool (`RPC_WORKERS`, default 50). Set `SCHEDULER_ENABLED=false` to skip `Start()` for tests/dev. Local-prover nodes are intentionally NOT dispatched server-side — they continue to pull via `/challenges/request`. See `internal/scheduler/scheduler_test.go` for end-to-end coverage |
+| 6 | future | Merkle snapshot rewards and on-chain Distributor — punted to a later phase |
+| 7 | `internal/api/` | No rate limiting on public endpoints — punted to a later phase |
 | 8 | `.gitignore` | RESOLVED (Phase 0 hygiene) — `server.exe`, `server.exe~`, `info.md`, `rem.txt` untracked from git; `.gitignore` updated to cover those plus forward-looking `data.db*` / `data/` for the SQLite persistence work in [ADR-0006](adr/0006-sqlite-mvp.md) |
 | 9 | `info.md` | RESOLVED — covered by gap #8 |
 | 10 | `internal/api/handlers.go` (`GetLeaderboard`) | RESOLVED (Phase 0 hygiene) — replaced O(n²) bubble sort with `sort.Slice` descending by `TotalPoints` |
+| 11 | `internal/verification/verifier.go` | Single trusted RPC source — a quorum across multiple endpoints would be more robust. Punted to a later phase |
+| 12 | `internal/api/handlers.go` | No anti-replay nonce on signed messages — captured signatures could be replayed inside the timestamp drift window. Punted to a later phase |
+| 13 | `internal/api/handlers.go` (`RegisterNode`) | Operator-supplied `RPCEndpoint` is not SSRF-checked — server could be coerced into probing private IPs. Punted to a later phase |
 | 14 | `internal/api/handlers.go` (`verifySignature`) | RESOLVED (Phase 0 hygiene) — replaced the hand-rolled hex byte loop and the `hexToByte` helper with `encoding/hex.DecodeString` and a length check (`len(sigBytes) == 65`). EIP-191 prefix and v-byte normalisation unchanged |
+| 15 | `internal/api/router.go` | Wildcard `Access-Control-Allow-Origin: *` — should be replaced with an env-driven allow-list. Punted to a later phase |
+| 16 | `internal/challenge/generator.go` | `*rand.Rand` is not mutex-protected — concurrent `GenerateChallenge` would race under `-race`. Phase 2 works around this by capping `RPCWorkers=1` in tests |
 
 > **Logger**: `log/slog` (stdlib, Go 1.21+). Honors `LOG_LEVEL` (`debug|info|warn|error`, case-insensitive, default `info`) and `LOG_FORMAT` (`json` selects the JSON handler, anything else / unset selects text). Configured once at boot in `cmd/server/main.go`; all packages call `slog.Default()` (e.g. `slog.Warn(...)` in `internal/verification/verifier.go`). The `log` package is no longer imported anywhere in the server tree.
 
 > **Tests**: a single conformance suite at `internal/store/conformance.go` is run against both `MemoryStore` and `SQLiteStore` from their respective `*_test.go` entry points so the two implementations cannot drift. End-to-end flow is exercised in `internal/integration/integration_test.go`. Run via `go test ./... -race -count=1` (the `-race` flag must stay clean across the full run).
 
-## 10. Open questions
+## 11. Open questions
 
 - Persistent store: Postgres vs. SQLite vs. embedded KV (Bolt/Badger)? Postgres if we expect multi-instance; SQLite if single-instance is fine for now
 - Should `TRUSTED_RPC` be plural (a quorum of trusted RPCs) so a single bad reference can't poison verification?

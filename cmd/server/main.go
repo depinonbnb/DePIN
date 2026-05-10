@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/depinonbnb/depin/internal/api"
+	"github.com/depinonbnb/depin/internal/scheduler"
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/store/memory"
 	"github.com/depinonbnb/depin/internal/store/sqlite"
@@ -54,6 +56,61 @@ func configureLogger() {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 	slog.SetDefault(slog.New(handler))
+}
+
+// resolveSchedulerConfig reads scheduler-related env vars and applies the
+// ADR-0007 defaults for any that are unset/invalid. Recognised vars:
+//
+//	HEARTBEAT_INTERVAL       (Go duration, e.g. "5m"; default 5m)
+//	CHALLENGE_CHECK_INTERVAL (Go duration; default 1m)
+//	REWARD_INTERVAL          (Go duration; default 5m)
+//	RPC_WORKERS              (positive int; default 50)
+//	SCHEDULER_ENABLED        (truthy unless "0", "false", "no", "off")
+func resolveSchedulerConfig() scheduler.Config {
+	cfg := scheduler.Config{
+		HeartbeatInterval:      parseDurationEnv("HEARTBEAT_INTERVAL", 5*time.Minute),
+		ChallengeCheckInterval: parseDurationEnv("CHALLENGE_CHECK_INTERVAL", 1*time.Minute),
+		RewardInterval:         parseDurationEnv("REWARD_INTERVAL", 5*time.Minute),
+		RPCWorkers:             parseIntEnv("RPC_WORKERS", 50),
+	}
+
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SCHEDULER_ENABLED"))) {
+	case "0", "false", "no", "off":
+		cfg.Disabled = true
+	default:
+		cfg.Disabled = false
+	}
+	return cfg
+}
+
+// parseDurationEnv parses a Go duration env var; returns def on miss/error.
+func parseDurationEnv(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid duration env var; using default",
+			"key", key, "value", v, "default", def)
+		return def
+	}
+	return d
+}
+
+// parseIntEnv parses a positive int env var; returns def on miss/error.
+func parseIntEnv(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		slog.Warn("invalid int env var; using default",
+			"key", key, "value", v, "default", def)
+		return def
+	}
+	return n
 }
 
 // resolveStoreBackend reads DATABASE_URL (preferred) and DB_PATH (legacy fallback
@@ -131,7 +188,10 @@ func main() {
 	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
-	// Start cleanup goroutine for expired challenges; tied to shutdownCtx so it
+	// Start cleanup goroutine for expired in-memory pending challenges held by
+	// the verifier (the local-prover flow). The SQLite store has its own
+	// pruner for the persistent pending_challenges table; this loop only
+	// covers the verifier's own short-lived map. Tied to shutdownCtx so it
 	// exits cleanly on signal.
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -148,6 +208,16 @@ func main() {
 			}
 		}
 	}()
+
+	// Build the verification scheduler (ADR-0007). We always construct it so
+	// the wiring is the same in tests; SCHEDULER_ENABLED=false skips Start().
+	schedCfg := resolveSchedulerConfig()
+	sched := scheduler.New(nodeStore, verifier, schedCfg)
+	if schedCfg.Disabled {
+		slog.Info("scheduler disabled via SCHEDULER_ENABLED env")
+	} else {
+		sched.Start()
+	}
 
 	router := api.SetupRouter(nodeStore, verifier, adminAPIKey)
 
@@ -169,18 +239,23 @@ func main() {
 	select {
 	case err := <-serverErr:
 		slog.Error("server failed", "error", err)
+		_ = sched.Close()
 		_ = nodeStore.Close()
 		os.Exit(1)
 	case <-shutdownCtx.Done():
 		slog.Info("shutdown signal received")
 	}
 
-	// Graceful shutdown: give the server up to 10s to finish in-flight
-	// requests, then close the store.
+	// Graceful shutdown order (per ADR-0007 §Consequences): HTTP listener
+	// first (stop accepting), schedulers second (stop generating work), store
+	// last (so any in-flight reward writes still have a destination).
 	gracefulCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(gracefulCtx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
+	}
+	if err := sched.Close(); err != nil {
+		slog.Error("scheduler close failed", "error", err)
 	}
 	if err := nodeStore.Close(); err != nil {
 		slog.Error("store close failed", "error", err)
