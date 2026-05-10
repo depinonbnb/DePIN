@@ -105,7 +105,7 @@ func setupServer(t *testing.T) (string, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	verifier := verification.NewVerifier(rpcSrv.URL)
+	verifier := verification.NewVerifier([]string{rpcSrv.URL})
 
 	const adminKey = "test-admin-key"
 	router := api.SetupRouter(store, verifier, adminKey)

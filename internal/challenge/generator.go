@@ -2,6 +2,7 @@ package challenge
 
 import (
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/depinonbnb/depin/internal/types"
@@ -38,7 +39,13 @@ var opbnbBlockRanges = blockRange{
 	recentWindow: 100,
 }
 
+// Generator builds randomized challenges. Phase 2 introduced concurrent
+// callers (the scheduler's challenge dispatcher fans out to a goroutine per
+// node), so the embedded *rand.Rand — which is NOT safe for concurrent use —
+// must be guarded by a mutex. Critical sections are kept tight (a single
+// rng.* call) to keep contention low.
 type Generator struct {
+	mu  sync.Mutex
 	rng *rand.Rand
 }
 
@@ -46,6 +53,20 @@ func NewGenerator() *Generator {
 	return &Generator{
 		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+}
+
+// rngIntn is a thin mutex-protected wrapper around (*rand.Rand).Intn.
+func (g *Generator) rngIntn(n int) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.rng.Intn(n)
+}
+
+// rngInt63n is a thin mutex-protected wrapper around (*rand.Rand).Int63n.
+func (g *Generator) rngInt63n(n int64) int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.rng.Int63n(n)
 }
 
 func (g *Generator) getBlockRanges(nodeType types.NodeType) blockRange {
@@ -85,13 +106,13 @@ func (g *Generator) getAvailableChallengeTypes(nodeType types.NodeType) []types.
 }
 
 func (g *Generator) randomBlockNumber(min, max uint64) uint64 {
-	return min + uint64(g.rng.Int63n(int64(max-min+1)))
+	return min + uint64(g.rngInt63n(int64(max-min+1)))
 }
 
 // Generate a random challenge for a node
 func (g *Generator) GenerateChallenge(nodeID string, nodeType types.NodeType) *types.Challenge {
 	challengeTypes := g.getAvailableChallengeTypes(nodeType)
-	challengeType := challengeTypes[g.rng.Intn(len(challengeTypes))]
+	challengeType := challengeTypes[g.rngIntn(len(challengeTypes))]
 
 	now := time.Now().UnixMilli()
 	expiresIn := int64(60000) // 1 minute to answer
@@ -127,7 +148,7 @@ func (g *Generator) generateParams(challengeType types.ChallengeType, nodeType t
 			minBlock = ranges.safeMax - 10000
 		}
 		blockNum := g.randomBlockNumber(minBlock, ranges.safeMax)
-		address := knownAddresses[g.rng.Intn(len(knownAddresses))]
+		address := knownAddresses[g.rngIntn(len(knownAddresses))]
 		return types.ChallengeParams{
 			BlockNumber: &blockNum,
 			Address:     address,

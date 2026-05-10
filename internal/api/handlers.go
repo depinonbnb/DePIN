@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/rpc"
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/depinonbnb/depin/internal/verification"
@@ -34,6 +35,11 @@ func NewHandlers(store store.Store, verifier *verification.Verifier) *Handlers {
 }
 
 // RegisterRequest is the body of POST /nodes/register.
+//
+// Phase 3 (anti-replay): Nonce is now required. The signed message includes
+// the nonce so a captured signature cannot be reused for a different request,
+// and the server records (wallet, nonce) with a 10-minute TTL — replays
+// inside that window are rejected with 409 Conflict.
 type RegisterRequest struct {
 	WalletAddress      string                   `json:"wallet_address" binding:"required"`
 	NodeType           types.NodeType           `json:"node_type" binding:"required"`
@@ -42,6 +48,7 @@ type RegisterRequest struct {
 	AuthToken          string                   `json:"auth_token"`
 	Signature          string                   `json:"signature" binding:"required"`
 	Timestamp          int64                    `json:"timestamp" binding:"required"`
+	Nonce              string                   `json:"nonce" binding:"required"`
 }
 
 // RegisterResponse is returned from POST /nodes/register.
@@ -97,6 +104,16 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 		return
 	}
 
+	// Phase 3: SSRF guard — only validate when an endpoint was provided.
+	// Reject RFC1918 / loopback / link-local / well-known internal suffixes.
+	// ALLOW_PRIVATE_RPC=1 disables for local docker-compose dev.
+	if req.RPCEndpoint != "" {
+		if err := rpc.IsAllowedURL(req.RPCEndpoint); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "rpc endpoint not allowed (must be public)"})
+			return
+		}
+	}
+
 	// Check timestamp is recent (within 5 minutes)
 	now := time.Now().UnixMilli()
 	if abs(now-req.Timestamp) > 5*60*1000 {
@@ -104,12 +121,23 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 		return
 	}
 
-	// Verify signature.
+	// Verify signature. Phase 3: the signed message now includes Nonce so a
+	// captured signature cannot be replayed against a different request.
+	// SPEC §6 documents this wire-format change.
 	message := "Register node\nWallet: " + req.WalletAddress +
 		"\nType: " + string(req.NodeType) +
-		"\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp)
+		"\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp) +
+		"\nNonce: " + req.Nonce
 	if !h.verifySignature(message, req.Signature, req.WalletAddress) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	// Phase 3: anti-replay. After signature verification, consume the nonce.
+	// 10-minute TTL matches the timestamp drift window times two so a slow
+	// client can't legitimately submit twice within the window.
+	if !h.store.ConsumeNonce(strings.ToLower(req.WalletAddress), req.Nonce, 10*time.Minute) {
+		c.JSON(http.StatusConflict, gin.H{"error": "replayed nonce"})
 		return
 	}
 

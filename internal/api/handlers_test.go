@@ -19,7 +19,7 @@ func init() {
 
 func setupTestRouter(adminKey string) (*gin.Engine, *memory.MemoryStore) {
 	s := memory.NewMemory()
-	v := verification.NewVerifier("https://bsc-dataseed1.binance.org")
+	v := verification.NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 	router := SetupRouter(s, v, adminKey)
 	return router, s
 }
@@ -405,10 +405,15 @@ func TestTestCreateNode(t *testing.T) {
 	}
 }
 
-func TestCORSHeaders(t *testing.T) {
+// TestCORSAllowedOriginEchoed verifies that when an Origin appears in the
+// CORS allow-list, it is echoed back on the response. Phase 3 replaces the
+// previous wildcard "*" behaviour with this explicit allow-list.
+func TestCORSAllowedOriginEchoed(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://depin.example.com,https://other.example")
 	router, _ := setupTestRouter("")
 
 	req, _ := http.NewRequest("OPTIONS", "/api/stats", nil)
+	req.Header.Set("Origin", "https://depin.example.com")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -416,7 +421,41 @@ func TestCORSHeaders(t *testing.T) {
 		t.Errorf("expected status 204 for OPTIONS, got %d", w.Code)
 	}
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Error("CORS header not set correctly")
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://depin.example.com" {
+		t.Errorf("expected CORS header to echo allowed origin, got %q", got)
+	}
+}
+
+// TestCORSDisallowedOriginNotEchoed asserts that an Origin not in the allow
+// list is silently dropped from the response (browsers will then enforce
+// the same-origin block).
+func TestCORSDisallowedOriginNotEchoed(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://allowed.example")
+	router, _ := setupTestRouter("")
+
+	req, _ := http.NewRequest("OPTIONS", "/api/stats", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("expected no CORS header for disallowed origin, got %q", got)
+	}
+}
+
+// TestCORSWildcardDisabled confirms that with no CORS_ALLOWED_ORIGINS set,
+// no Access-Control-Allow-Origin header is ever returned, even for an OPTIONS
+// preflight that includes an Origin.
+func TestCORSWildcardDisabled(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "")
+	router, _ := setupTestRouter("")
+
+	req, _ := http.NewRequest("OPTIONS", "/api/stats", nil)
+	req.Header.Set("Origin", "https://anyone.example")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("expected no CORS header when allow-list is empty, got %q", got)
 	}
 }

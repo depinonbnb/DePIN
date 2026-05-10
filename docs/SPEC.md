@@ -37,11 +37,12 @@ The on-chain side (staking, points, node-registry contracts) lives elsewhere and
                     └────────┬─────────┬─┘
                              │         │
               ┌──────────────▼──┐   ┌──▼─────────────────────┐
-              │ TRUSTED_RPC      │   │  Operator's BNB node   │
-              │ (BSC / opBNB     │   │  + cmd/prover (CLI)    │
-              │  reference       │   │  via signed proofs OR  │
-              │  endpoint)       │   │  exposed JSON-RPC      │
-              └──────────────────┘   └────────────────────────┘
+              │ TRUSTED_RPCS     │   │  Operator's BNB node   │
+              │ (quorum of BSC   │   │  + cmd/prover (CLI)    │
+              │  / opBNB ref     │   │  via signed proofs OR  │
+              │  endpoints,      │   │  exposed JSON-RPC      │
+              │  ADR-0009)       │   └────────────────────────┘
+              └──────────────────┘
 ```
 
 Single-binary Go service (`cmd/server`). A separate binary (`cmd/prover`) is shipped to operators who don't want to expose their node's RPC publicly; it polls challenges from the API, queries the local node, signs the result, and submits.
@@ -148,26 +149,40 @@ Two interchangeable paths produce the same `VerificationResult`:
 
 Server holds a public RPC URL for the node. On a challenge cycle:
 1. Pick a challenge type (block-hash, block-data, sync-status, balance, tx-receipt)
-2. Query the trusted RPC (truth) and the node's RPC (claim)
+2. Query the **trusted RPC quorum** ([ADR-0009](adr/0009-quorum-trusted-rpc.md)) and the node's RPC (claim)
 3. Compare. Record latency.
 4. Apply anti-cheat thresholds (see §7)
+
+The quorum step fans out across every endpoint in `TRUSTED_RPCS` (default: 3 BSC dataseeds) in parallel. The majority answer is treated as truth. **No-majority abort case**: if no answer reaches `floor(N/2)+1`, the verifier produces a `VerificationResult` with `FailureReason="trusted RPC quorum disagreement (treated as abort, not cheating)"` and `Suspicious=false`. The store still records the result, but the operator's warning count is not bumped.
 
 ### 6.2 Local-prover
 
 Operator runs `cmd/prover`. Loop:
 1. `GET /challenges/request` → JSON challenge
 2. Query the local node (via `NODE_RPC`, default `localhost:8545`)
-3. Sign the message
+3. Generate a fresh random `nonce` (e.g. UUID v4); sign the message
    ```
    Challenge Response
    ID: <challenge id>
    Answer: <answer>
    Timestamp: <unix-ms>
+   Nonce: <nonce>
    ```
    with `PROVER_PRIVATE_KEY`
-4. `POST /challenges/submit` with the signed response
+4. `POST /challenges/submit` with the signed response (body must include `nonce`)
 
-Server verifies the signature corresponds to the registered wallet, then compares the answer against the trusted RPC.
+Server verifies the signature corresponds to the registered wallet, **rejects replays** by recording `(wallet, nonce)` with a 10-minute TTL (returns 409 Conflict on replay), then compares the answer against the trusted RPC quorum.
+
+Registration uses the same nonce-bound message shape:
+```
+Register node
+Wallet: <address>
+Type: <node type>
+Timestamp: <unix-ms>
+Nonce: <nonce>
+```
+
+> **Wire-format change (Phase 3)**: both signed messages above used to omit the `Nonce: …` line. Provers and front-end signers MUST be updated. Servers without the new field receive 400 (binding required); old clients without the field will receive 400 too. Document for downstream operators.
 
 Both paths use EIP-191 prefixed messages.
 
@@ -190,7 +205,10 @@ Warnings accumulate; after a threshold the node is flagged for admin review. Dec
 | Var | Default | Used by | Notes |
 |---|---|---|---|
 | `PORT` | `3000` | server | The frontend assumes `3001` — see gap #3 |
-| `TRUSTED_RPC` | `https://bsc-dataseed1.binance.org` | server | Reference BSC/opBNB RPC the verifier compares operator answers against |
+| `TRUSTED_RPCS` | 3 BSC dataseeds (`bsc-dataseed{1,2,3}.binance.org`) | server | **Preferred.** Comma-separated quorum endpoints per [ADR-0009](adr/0009-quorum-trusted-rpc.md). With N endpoints majority is `floor(N/2)+1`. If exactly one endpoint is configured we silently degrade to ADR-0005 single-source behavior and log a warning. opBNB tiers can use `https://opbnb-mainnet-rpc.bnbchain.org,…` if BSC dataseeds are wrong for the node type — heterogeneous endpoints work because the quorum lookup is per-call |
+| `TRUSTED_RPC` | (empty) | server | **Deprecated.** Legacy ADR-0005 single endpoint. If `TRUSTED_RPCS` is unset and this is set we treat it as a one-element list and emit a deprecation warning on boot. Drop after one release cycle |
+| `CORS_ALLOWED_ORIGINS` | (empty) | server | Comma-separated origins permitted to read the API cross-origin. **Empty / unset = no Access-Control-Allow-Origin header is ever returned**, which causes browsers to block all cross-origin reads — set this to your frontend's origin in prod |
+| `ALLOW_PRIVATE_RPC` | `0` | server | When `1`, the SSRF guard on operator-supplied `RPCEndpoint` is disabled. Use only for local docker-compose / dev. In prod the guard rejects private IPs, loopback, link-local, and `.local` / `.internal` / `.corp` / `.home` / `.lan` suffixes |
 | `ADMIN_API_KEY` | (empty) | server | **If empty, admin endpoints return 503** ("admin endpoints disabled"). Always set in prod — see gap #2 |
 | `PROVER_PRIVATE_KEY` | (none) | prover | Operator's wallet key |
 | `NODE_RPC` | `http://localhost:8545` | prover | Operator's local node RPC |
@@ -219,6 +237,12 @@ Lifecycle: `scheduler.New(store, verifier, cfg)` builds the bundle (no goroutine
 
 Shutdown order (per ADR-0007): HTTP listener first (stop accepting), schedulers second (stop generating work), store last (so any in-flight reward writes still have a destination).
 
+> **Phase 3 hardened (2026-05): the `*rand.Rand` is now mutex-protected,
+> the trusted RPC is a quorum ([ADR-0009](adr/0009-quorum-trusted-rpc.md)),
+> the EIP-191 messages bind a server-recorded nonce, the operator-supplied
+> RPC endpoint is SSRF-checked, the wildcard CORS header is replaced with an
+> allow-list, and per-IP + per-wallet rate limits are enforced.**
+
 ## 9. Known gaps
 
 | # | Where | Issue |
@@ -229,16 +253,16 @@ Shutdown order (per ADR-0007): HTTP listener first (stop accepting), schedulers 
 | 4 | `internal/verification/verifier.go` | Anti-cheat is latency-based only; no statistical anomaly detection |
 | 5 | `internal/scheduler/` | RESOLVED (Phase 2 — ADR-0007) — three server-side tickers now drive verification: heartbeat (every `HEARTBEAT_INTERVAL`, default 5m), challenge dispatcher (every `CHALLENGE_CHECK_INTERVAL`, default 1m, gated per-node by `NodeType.ChallengeFrequencyMinutes()`), and uptime reward (every `REWARD_INTERVAL`, default 5m, calling `AwardUptimePoints` and finally retiring that dead-code path). All three share a single semaphore-bounded worker pool (`RPC_WORKERS`, default 50). Set `SCHEDULER_ENABLED=false` to skip `Start()` for tests/dev. Local-prover nodes are intentionally NOT dispatched server-side — they continue to pull via `/challenges/request`. See `internal/scheduler/scheduler_test.go` for end-to-end coverage |
 | 6 | future | Merkle snapshot rewards and on-chain Distributor — punted to a later phase |
-| 7 | `internal/api/` | No rate limiting on public endpoints — punted to a later phase |
+| 7 | `internal/api/ratelimit.go` | RESOLVED (Phase 3) — per-IP global limit (60 req/min), tighter per-IP cap on `/nodes/register` and `/challenges/submit` (10/min), and per-wallet caps (5 register/min, 30 submit/min). LRU map of `*rate.Limiter` capped at 10k keys. Implemented with `golang.org/x/time/rate`. Admin routes are not rate-limited (already auth-gated) |
 | 8 | `.gitignore` | RESOLVED (Phase 0 hygiene) — `server.exe`, `server.exe~`, `info.md`, `rem.txt` untracked from git; `.gitignore` updated to cover those plus forward-looking `data.db*` / `data/` for the SQLite persistence work in [ADR-0006](adr/0006-sqlite-mvp.md) |
 | 9 | `info.md` | RESOLVED — covered by gap #8 |
 | 10 | `internal/api/handlers.go` (`GetLeaderboard`) | RESOLVED (Phase 0 hygiene) — replaced O(n²) bubble sort with `sort.Slice` descending by `TotalPoints` |
-| 11 | `internal/verification/verifier.go` | Single trusted RPC source — a quorum across multiple endpoints would be more robust. Punted to a later phase |
-| 12 | `internal/api/handlers.go` | No anti-replay nonce on signed messages — captured signatures could be replayed inside the timestamp drift window. Punted to a later phase |
-| 13 | `internal/api/handlers.go` (`RegisterNode`) | Operator-supplied `RPCEndpoint` is not SSRF-checked — server could be coerced into probing private IPs. Punted to a later phase |
+| 11 | `internal/verification/verifier.go` | RESOLVED (Phase 3) — replaced the single `*rpc.Client` trusted source with a quorum (`*rpc.QuorumClient`) per [ADR-0009](adr/0009-quorum-trusted-rpc.md). `TRUSTED_RPCS` is the new env var; `TRUSTED_RPC` (singular) is treated as a one-element list with a deprecation warning |
+| 12 | `internal/api/handlers.go` + `internal/store/*` | RESOLVED (Phase 3) — anti-replay nonces enforced on `/nodes/register` and `/challenges/submit`. Signed message format now binds `Nonce: …`; server records `(wallet, nonce)` with 10-minute TTL via `store.ConsumeNonce`. Replays return 409 Conflict. Conformance suite covers both backends (`runConsumeNonce*`) |
+| 13 | `internal/rpc/ssrf.go` + `internal/api/handlers.go` (`RegisterNode`) | RESOLVED (Phase 3) — operator-supplied `RPCEndpoint` is validated against an SSRF allow-list before persistence. Reject schemes other than http/https, RFC1918 / loopback / link-local / unique-local IPs, and `.local` / `.internal` / `.corp` / `.home` / `.lan` host suffixes. Override with `ALLOW_PRIVATE_RPC=1` for dev. DNS rebinding is not fully prevented — that's a known follow-up for the outbound `http.Client` |
 | 14 | `internal/api/handlers.go` (`verifySignature`) | RESOLVED (Phase 0 hygiene) — replaced the hand-rolled hex byte loop and the `hexToByte` helper with `encoding/hex.DecodeString` and a length check (`len(sigBytes) == 65`). EIP-191 prefix and v-byte normalisation unchanged |
-| 15 | `internal/api/router.go` | Wildcard `Access-Control-Allow-Origin: *` — should be replaced with an env-driven allow-list. Punted to a later phase |
-| 16 | `internal/challenge/generator.go` | `*rand.Rand` is not mutex-protected — concurrent `GenerateChallenge` would race under `-race`. Phase 2 works around this by capping `RPCWorkers=1` in tests |
+| 15 | `internal/api/router.go` | RESOLVED (Phase 3) — replaced wildcard `Access-Control-Allow-Origin: *` with an env-driven allow-list (`CORS_ALLOWED_ORIGINS`). Default is empty, which causes the middleware to never set the header — set the env var to your frontend origin |
+| 16 | `internal/challenge/generator.go` | RESOLVED (Phase 3) — `*rand.Rand` is now mutex-protected; concurrent `GenerateChallenge` is safe under `-race`. Phase 2's workaround (`RPCWorkers=1` in tests) was removed |
 
 > **Logger**: `log/slog` (stdlib, Go 1.21+). Honors `LOG_LEVEL` (`debug|info|warn|error`, case-insensitive, default `info`) and `LOG_FORMAT` (`json` selects the JSON handler, anything else / unset selects text). Configured once at boot in `cmd/server/main.go`; all packages call `slog.Default()` (e.g. `slog.Warn(...)` in `internal/verification/verifier.go`). The `log` package is no longer imported anywhere in the server tree.
 

@@ -1,25 +1,92 @@
+// Package api: router.go wires the Gin engine, middleware stack, and route
+// table. Phase 3 adds three middleware additions:
+//
+//   - CORSMiddleware: replaces the previous wildcard "*" Access-Control-
+//     Allow-Origin with an env-driven allowlist (CORS_ALLOWED_ORIGINS,
+//     comma-separated). Default: empty list, which causes the middleware to
+//     never set the header — browsers will block cross-origin reads.
+//   - RateLimitMiddleware: per-IP global rate limiting (60 rpm with burst).
+//   - Tighter per-IP and per-wallet limits on /nodes/register and
+//     /challenges/submit.
+//
+// Admin routes are still gated by AdminAuthMiddleware; they intentionally
+// skip the rate limiters because they're already protected.
 package api
 
 import (
+	"os"
+	"strings"
+
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/verification"
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
-	router := gin.Default()
+// CORSMiddleware reads CORS_ALLOWED_ORIGINS at construction time and returns
+// a Gin handler that echoes the Origin header only when it is in the allow
+// list. allowedOrigins should be the env-resolved slice; pass nil/empty for
+// "block everything".
+func CORSMiddleware(allowedOrigins []string) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			allowed[o] = struct{}{}
+		}
+	}
 
-	// Enable CORS
-	router.Use(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	const (
+		methodList  = "GET, POST, OPTIONS"
+		headerList  = "Content-Type, Authorization, X-Admin-Key"
+		preflightTTL = "300" // 5 minutes
+	)
+
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			if _, ok := allowed[origin]; ok {
+				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Vary", "Origin")
+				c.Header("Access-Control-Allow-Methods", methodList)
+				c.Header("Access-Control-Allow-Headers", headerList)
+				c.Header("Access-Control-Max-Age", preflightTTL)
+			}
+		}
+
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
 		}
 		c.Next()
-	})
+	}
+}
+
+// resolveAllowedOrigins reads CORS_ALLOWED_ORIGINS into a slice. Empty/unset
+// means "no origin is allowed"; document this in SPEC §8.
+func resolveAllowedOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
+	router := gin.Default()
+
+	// CORS: env-driven allowlist (CORS_ALLOWED_ORIGINS).
+	router.Use(CORSMiddleware(resolveAllowedOrigins()))
+
+	// Global per-IP rate limit (defense in depth — sensitive routes also have
+	// per-route caps below).
+	router.Use(RateLimitMiddleware(GlobalIPRPS, GlobalIPBurst))
 
 	handlers := NewHandlers(store, verifier)
 
@@ -30,8 +97,12 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 
 	api := router.Group("/api")
 	{
-		// Node registration
-		api.POST("/nodes/register", handlers.RegisterNode)
+		// Tighter per-IP cap + per-wallet cap on /nodes/register.
+		api.POST("/nodes/register",
+			RateLimitMiddleware(StrictIPRPS, StrictIPBurst),
+			WalletRateLimitMiddleware(WalletRegisterRPS, WalletRegisterBurst, "wallet_address"),
+			handlers.RegisterNode,
+		)
 		api.GET("/nodes/:nodeId", handlers.GetNode)
 		api.GET("/nodes/wallet/:walletAddress", handlers.GetNodesByWallet)
 		api.GET("/nodes/:nodeId/stats", handlers.GetNodeStats)
@@ -39,9 +110,20 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 		// Wallet stats (total points across all nodes)
 		api.GET("/wallet/:walletAddress/stats", handlers.GetWalletStats)
 
-		// Challenges (for local-prover)
+		// Challenges (for local-prover). The submit path takes a per-wallet
+		// limit too — but on a far higher cap than register because a healthy
+		// operator legitimately submits dozens per hour.
 		api.GET("/challenges/request", handlers.RequestChallenge)
-		api.POST("/challenges/submit", handlers.SubmitChallenge)
+		api.POST("/challenges/submit",
+			RateLimitMiddleware(StrictIPRPS, StrictIPBurst),
+			// Per-source cap on submits. We key by node_id rather than wallet
+			// because a wallet owning multiple nodes legitimately wants
+			// per-node throughput. node_id is in the body the handler will
+			// bind anyway, so the middleware reads it without an extra store
+			// hit.
+			WalletRateLimitMiddleware(WalletSubmitRPS, WalletSubmitBurst, "node_id"),
+			handlers.SubmitChallenge,
+		)
 
 		// Direct verification (for exposed-rpc)
 		api.POST("/verify/:nodeId", handlers.VerifyNode)
@@ -53,7 +135,8 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 
 		// Admin endpoints (protected by API key).
 		// AdminAuthMiddleware fails closed when adminAPIKey is empty
-		// (returns 503), so it MUST always be applied.
+		// (returns 503), so it MUST always be applied. Admin routes are
+		// intentionally NOT rate limited — they're already auth-gated.
 		admin := api.Group("/admin")
 		admin.Use(AdminAuthMiddleware(adminAPIKey))
 		{

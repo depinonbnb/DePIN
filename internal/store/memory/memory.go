@@ -22,7 +22,11 @@ type MemoryStore struct {
 	nodesByWallet       map[string][]string
 	verificationHistory map[string][]*types.VerificationResult
 	heartbeats          map[string][]*types.HeartbeatRecord
-	mu                  sync.RWMutex
+	// nonces is keyed by wallet + ":" + nonce. Value is the unix-ms time the
+	// row expires; reads after that are treated as missing so the same nonce
+	// can be reused legitimately once its window has passed.
+	nonces map[string]int64
+	mu     sync.RWMutex
 }
 
 // NewMemory constructs an empty MemoryStore. It never returns nil.
@@ -32,6 +36,7 @@ func NewMemory() *MemoryStore {
 		nodesByWallet:       make(map[string][]string),
 		verificationHistory: make(map[string][]*types.VerificationResult),
 		heartbeats:          make(map[string][]*types.HeartbeatRecord),
+		nonces:              make(map[string]int64),
 	}
 }
 
@@ -398,6 +403,42 @@ func (s *MemoryStore) SetNodeCheatStatus(nodeID string, status types.CheatStatus
 		node.IsActive = false
 	}
 
+	return true
+}
+
+// ConsumeNonce records (wallet, nonce) with a TTL. Returns true if the pair
+// was recorded fresh, false if the same pair is still present and unexpired.
+// Expired rows are evicted on the way through so memory doesn't grow without
+// bound; this keeps us honest without a separate goroutine.
+func (s *MemoryStore) ConsumeNonce(wallet string, nonce string, ttl time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UnixMilli()
+	key := wallet + ":" + nonce
+
+	if exp, exists := s.nonces[key]; exists && exp > now {
+		// Live replay.
+		return false
+	}
+
+	// Opportunistic prune so the map doesn't grow unboundedly across long
+	// runs. Cap the per-call work so a request with a degenerate map doesn't
+	// stall on this; the SQLite store has its own pruner for the persistent
+	// case.
+	const maxScan = 64
+	scanned := 0
+	for k, exp := range s.nonces {
+		if exp <= now {
+			delete(s.nonces, k)
+		}
+		scanned++
+		if scanned >= maxScan {
+			break
+		}
+	}
+
+	s.nonces[key] = now + ttl.Milliseconds()
 	return true
 }
 

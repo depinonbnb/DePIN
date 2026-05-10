@@ -113,6 +113,44 @@ func parseIntEnv(key string, def int) int {
 	return n
 }
 
+// resolveTrustedRPCs returns the list of trusted RPC endpoints used by the
+// verifier per ADR-0009. Resolution order:
+//
+//  1. TRUSTED_RPCS (comma-separated) — preferred, the ADR-0009 contract.
+//  2. TRUSTED_RPC (singular) — legacy ADR-0005 var. Logged with a
+//     deprecation warning and treated as a one-element list. Drop after
+//     one release cycle.
+//  3. Default: 3 BSC dataseeds. ADR-0009 documents this as the right
+//     default for BSC tiers; opBNB tiers using the same quorum is
+//     acceptable for now (the actual lookup is per-call, so heterogeneous
+//     endpoints don't matter for correctness — only for accuracy).
+func resolveTrustedRPCs() []string {
+	if raw := strings.TrimSpace(os.Getenv("TRUSTED_RPCS")); raw != "" {
+		parts := strings.Split(raw, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	if legacy := strings.TrimSpace(os.Getenv("TRUSTED_RPC")); legacy != "" {
+		slog.Warn("TRUSTED_RPC (singular) is deprecated and will be removed next release; set TRUSTED_RPCS (comma-separated) instead — see ADR-0009",
+			"value", legacy)
+		return []string{legacy}
+	}
+
+	return []string{
+		"https://bsc-dataseed1.binance.org",
+		"https://bsc-dataseed2.binance.org",
+		"https://bsc-dataseed3.binance.org",
+	}
+}
+
 // resolveStoreBackend reads DATABASE_URL (preferred) and DB_PATH (legacy fallback
 // from ADR-0006) and decides which store to construct. Returns the constructed
 // Store and a human-readable description for logging.
@@ -153,10 +191,7 @@ func main() {
 		port = "3000"
 	}
 
-	trustedRPC := os.Getenv("TRUSTED_RPC")
-	if trustedRPC == "" {
-		trustedRPC = "https://bsc-dataseed1.binance.org"
-	}
+	trustedRPCs := resolveTrustedRPCs()
 
 	adminAPIKey := os.Getenv("ADMIN_API_KEY")
 	adminStatus := "configured"
@@ -172,7 +207,7 @@ func main() {
 
 	slog.Info("DePIN BNB Verification Server starting",
 		"port", port,
-		"trusted_rpc", trustedRPC,
+		"trusted_rpcs", trustedRPCs,
 		"admin_status", adminStatus,
 		"store_backend", backendDescription,
 	)
@@ -180,7 +215,7 @@ func main() {
 		slog.Warn("admin endpoints disabled — ADMIN_API_KEY not configured")
 	}
 
-	verifier := verification.NewVerifier(trustedRPC)
+	verifier := verification.NewVerifier(trustedRPCs)
 
 	// Set up signal-driven shutdown context. Use signal.NotifyContext so the
 	// returned context is cancelled on SIGINT/SIGTERM and we can drive

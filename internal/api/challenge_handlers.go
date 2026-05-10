@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/depinonbnb/depin/internal/types"
@@ -29,6 +30,10 @@ type ChallengePublic struct {
 }
 
 // SubmitChallengeRequest is the body of POST /challenges/submit.
+//
+// Phase 3 (anti-replay): Nonce is required and forms part of the signed
+// message. The server consumes (wallet, nonce) with a 10-minute TTL after
+// signature verification — replays in-window return 409 Conflict.
 type SubmitChallengeRequest struct {
 	ChallengeID    string `json:"challenge_id" binding:"required"`
 	NodeID         string `json:"node_id" binding:"required"`
@@ -36,6 +41,7 @@ type SubmitChallengeRequest struct {
 	Signature      string `json:"signature" binding:"required"`
 	ResponseTimeMs uint64 `json:"response_time_ms"`
 	Timestamp      int64  `json:"timestamp" binding:"required"`
+	Nonce          string `json:"nonce" binding:"required"`
 }
 
 // GET /challenges/request - issue a challenge to a node (local-prover path).
@@ -88,12 +94,19 @@ func (h *Handlers) SubmitChallenge(c *gin.Context) {
 		return
 	}
 
-	// Verify signature.
+	// Verify signature. Phase 3: Nonce is bound into the message (SPEC §6).
 	message := "Challenge Response\nID: " + req.ChallengeID +
 		"\nAnswer: " + req.Answer +
-		"\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp)
+		"\nTimestamp: " + fmt.Sprintf("%d", req.Timestamp) +
+		"\nNonce: " + req.Nonce
 	if !h.verifySignature(message, req.Signature, node.WalletAddress) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	// Phase 3: anti-replay nonce consumption.
+	if !h.store.ConsumeNonce(strings.ToLower(node.WalletAddress), req.Nonce, 10*time.Minute) {
+		c.JSON(http.StatusConflict, gin.H{"error": "replayed nonce"})
 		return
 	}
 

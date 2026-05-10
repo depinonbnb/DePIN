@@ -20,28 +20,47 @@ type pendingChallenge struct {
 }
 
 type Verifier struct {
-	trustedRPC        *rpc.Client
+	// trustedRPC is the quorum client added in Phase 3 per ADR-0009. It still
+	// satisfies the same per-call surface as the old single *rpc.Client, but
+	// returns RpcResponse{Error: rpc.QuorumNoMajority} when no majority is
+	// reached. Callers below treat that as ABORT (skip + re-queue), NOT as
+	// cheating.
+	trustedRPC        *rpc.QuorumClient
 	generator         *challenge.Generator
 	pendingChallenges map[string]*pendingChallenge
 	mu                sync.RWMutex
 }
 
-func NewVerifier(trustedRPCEndpoint string) *Verifier {
+// NewVerifier constructs a Verifier whose trusted source is the quorum of
+// the given RPC endpoints. Pass a single-element slice for ADR-0005
+// behaviour; the QuorumClient logs a deprecation warning in that case.
+func NewVerifier(trustedRPCEndpoints []string) *Verifier {
 	return &Verifier{
-		trustedRPC:        rpc.NewClient(trustedRPCEndpoint, ""),
+		trustedRPC:        rpc.NewQuorum(trustedRPCEndpoints),
 		generator:         challenge.NewGenerator(),
 		pendingChallenges: make(map[string]*pendingChallenge),
 	}
 }
 
 // Create a challenge for a node
-// We query our trusted node first so we know the right answer
+// We query our trusted node first so we know the right answer.
+// Quorum-RPC abort path: if the trusted quorum can't agree (response.Error
+// == rpc.QuorumNoMajority) we surface it as a normal error so the caller
+// can decide what to do — per ADR-0009 the caller (scheduler / handler)
+// must NOT punish the node, just skip and re-queue.
 func (v *Verifier) CreateChallenge(node *types.NodeRegistration) (*types.Challenge, error) {
 	ch := v.generator.GenerateChallenge(node.ID, node.NodeType)
 
 	// Get the answer from our trusted node
 	response := v.trustedRPC.ExecuteChallenge(ch)
 	if !response.Success {
+		if response.Error == rpc.QuorumNoMajority {
+			slog.Warn("verification: trusted RPC quorum disagreement; aborting challenge create",
+				"node_id", node.ID,
+				"challenge_type", string(ch.ChallengeType),
+			)
+			return nil, fmt.Errorf("trusted RPC quorum disagreement (treated as abort, not cheating)")
+		}
 		return nil, fmt.Errorf("failed to get expected answer: %s", response.Error)
 	}
 
@@ -205,6 +224,25 @@ func (v *Verifier) VerifyExposedRPC(node *types.NodeRegistration) *types.Verific
 	// Get the right answer from our trusted node
 	expectedResponse := v.trustedRPC.ExecuteChallenge(ch)
 	if !expectedResponse.Success {
+		// ADR-0009 abort path: a "no quorum" answer means the trusted side
+		// disagreed with itself. We MUST NOT bump the operator's warning
+		// count — Suspicious=false guarantees the in-memory + sqlite stores
+		// won't escalate. Caller still records the result so it shows up in
+		// history; downstream stats can ignore it.
+		if expectedResponse.Error == rpc.QuorumNoMajority {
+			slog.Warn("verification: trusted RPC quorum disagreement; aborting verify",
+				"node_id", node.ID,
+				"challenge_type", string(ch.ChallengeType),
+			)
+			return &types.VerificationResult{
+				ChallengeID:   ch.ID,
+				NodeID:        node.ID,
+				Passed:        false,
+				FailureReason: "trusted RPC quorum disagreement (treated as abort, not cheating)",
+				Suspicious:    false,
+				Timestamp:     now,
+			}
+		}
 		return &types.VerificationResult{
 			ChallengeID:   ch.ID,
 			NodeID:        node.ID,

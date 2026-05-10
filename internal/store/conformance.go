@@ -56,6 +56,16 @@ func Suite(t *testing.T, mk func(t testing.TB) Store) {
 	t.Run("GetFlaggedNodes", func(t *testing.T) { runGetFlaggedNodes(t, mk) })
 	t.Run("SetNodeCheatStatus_ClearAndBan", func(t *testing.T) { runSetNodeCheatStatus(t, mk) })
 
+	// Anti-replay nonces ---------------------------------------------------
+	t.Run("ConsumeNonce_FreshThenReplay", func(t *testing.T) { runConsumeNonceFreshThenReplay(t, mk) })
+	t.Run("ConsumeNonce_DifferentWalletsDoNotCollide", func(t *testing.T) { runConsumeNonceDifferentWallets(t, mk) })
+	t.Run("ConsumeNonce_ExpiredRowsRotate", func(t *testing.T) { runConsumeNonceExpiredRotate(t, mk) })
+	t.Run("ConsumeNonce_TTLIsolation", func(t *testing.T) { runConsumeNonce_TTLIsolation(t, mk) })
+
+	// Rigor-tier additions -------------------------------------------------
+	t.Run("SetNodeCheatStatus_Idempotent", func(t *testing.T) { runIdempotentSetCheatStatus(t, mk) })
+	t.Run("AwardUptimePoints_Monotonic", func(t *testing.T) { runMonotonicAwardUptimePoints(t, mk) })
+
 	// Lifecycle ------------------------------------------------------------
 	t.Run("Close_Idempotent", func(t *testing.T) { runCloseIdempotent(t, mk) })
 }

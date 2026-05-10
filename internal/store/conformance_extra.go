@@ -12,6 +12,59 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Anti-replay nonce subtests (ConsumeNonce contract)
+// ---------------------------------------------------------------------------
+
+// runConsumeNonceFreshThenReplay verifies the basic contract:
+//   - first call with a (wallet, nonce) returns true
+//   - immediate second call with the SAME pair returns false
+func runConsumeNonceFreshThenReplay(t *testing.T, mk func(t testing.TB) Store) {
+	s := mk(t)
+	defer mustClose(t, s)
+
+	if !s.ConsumeNonce("0xwallet", "abc", 10*time.Minute) {
+		t.Fatal("expected first ConsumeNonce to return true (fresh)")
+	}
+	if s.ConsumeNonce("0xwallet", "abc", 10*time.Minute) {
+		t.Error("expected second ConsumeNonce to return false (replay)")
+	}
+}
+
+// runConsumeNonceDifferentWallets verifies that nonces are namespaced per
+// wallet — two different wallets reusing the same nonce string MUST both
+// succeed.
+func runConsumeNonceDifferentWallets(t *testing.T, mk func(t testing.TB) Store) {
+	s := mk(t)
+	defer mustClose(t, s)
+
+	if !s.ConsumeNonce("0xalice", "abc", 5*time.Minute) {
+		t.Fatal("alice fresh nonce should return true")
+	}
+	if !s.ConsumeNonce("0xbob", "abc", 5*time.Minute) {
+		t.Error("bob using the same nonce string should still return true (different wallet)")
+	}
+}
+
+// runConsumeNonceExpiredRotate verifies that once a nonce row has expired the
+// same (wallet, nonce) pair can be reused. We exercise this with a
+// near-zero TTL.
+func runConsumeNonceExpiredRotate(t *testing.T, mk func(t testing.TB) Store) {
+	s := mk(t)
+	defer mustClose(t, s)
+
+	if !s.ConsumeNonce("0xrotate", "n1", 1*time.Millisecond) {
+		t.Fatal("first call expected true")
+	}
+
+	// Sleep just past the TTL so the row counts as expired.
+	time.Sleep(20 * time.Millisecond)
+
+	if !s.ConsumeNonce("0xrotate", "n1", 1*time.Millisecond) {
+		t.Error("after TTL expiry the same (wallet, nonce) should be accepted again")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Verification subtests
 // ---------------------------------------------------------------------------
 

@@ -109,16 +109,16 @@ func TestSchedulerRunsAllThreeTickers(t *testing.T) {
 	// skip it (no server-side dispatch for local-prover nodes).
 	nLocal := s.RegisterNode("0x3333", types.BscFull, types.LocalProver, "", "")
 
-	v := verification.NewVerifier(mock.URL)
+	v := verification.NewVerifier([]string{mock.URL})
 
-	// RPCWorkers=1 because the challenge.Generator's *rand.Rand is not yet
-	// mutex-protected at Phase 2; a higher worker count would race under
-	// `go test -race`. Phase 3 lifts this restriction.
+	// Phase 3: the challenge.Generator's *rand.Rand is now mutex-protected,
+	// so we can safely run with multiple workers without -race noise. Use a
+	// non-trivial pool size to actually exercise the concurrent path.
 	sched := New(s, v, Config{
 		HeartbeatInterval:      30 * time.Millisecond,
 		ChallengeCheckInterval: 30 * time.Millisecond,
 		RewardInterval:         30 * time.Millisecond,
-		RPCWorkers:             1,
+		RPCWorkers:             4,
 	})
 
 	sched.Start()
@@ -181,7 +181,7 @@ func TestSchedulerDisabledSkipsStart(t *testing.T) {
 	defer s.Close()
 
 	s.RegisterNode("0xfeed", types.BscFull, types.ExposedRPC, mock.URL, "")
-	v := verification.NewVerifier(mock.URL)
+	v := verification.NewVerifier([]string{mock.URL})
 
 	sched := New(s, v, Config{
 		HeartbeatInterval:      10 * time.Millisecond,
@@ -220,7 +220,7 @@ func TestSchedulerSkipsBannedNodes(t *testing.T) {
 	banned := s.RegisterNode("0xbanned", types.BscFull, types.ExposedRPC, mock.URL, "")
 	s.SetNodeCheatStatus(banned.ID, types.StatusBanned, "test ban")
 
-	v := verification.NewVerifier(mock.URL)
+	v := verification.NewVerifier([]string{mock.URL})
 	sched := New(s, v, Config{
 		HeartbeatInterval:      20 * time.Millisecond,
 		ChallengeCheckInterval: 20 * time.Millisecond,
@@ -246,7 +246,7 @@ func TestSchedulerCloseIsIdempotent(t *testing.T) {
 
 	s := memory.NewMemory()
 	defer s.Close()
-	v := verification.NewVerifier("http://nowhere.invalid")
+	v := verification.NewVerifier([]string{"http://nowhere.invalid"})
 
 	sched := New(s, v, Config{Disabled: true})
 	if err := sched.Close(); err != nil {

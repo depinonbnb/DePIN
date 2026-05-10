@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewVerifier(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	if v == nil {
 		t.Fatal("NewVerifier returned nil")
@@ -24,7 +24,7 @@ func TestNewVerifier(t *testing.T) {
 }
 
 func TestVerifyResponseExpired(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Response for non-existent challenge
 	response := &types.ChallengeResponse{
@@ -47,7 +47,7 @@ func TestVerifyResponseExpired(t *testing.T) {
 }
 
 func TestVerifyResponseTooSlow(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Manually create a pending challenge
 	v.mu.Lock()
@@ -85,7 +85,7 @@ func TestVerifyResponseTooSlow(t *testing.T) {
 }
 
 func TestVerifyResponseWrongAnswer(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Manually create a pending challenge
 	v.mu.Lock()
@@ -119,7 +119,7 @@ func TestVerifyResponseWrongAnswer(t *testing.T) {
 }
 
 func TestVerifyResponseSuccess(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Manually create a pending challenge
 	v.mu.Lock()
@@ -153,7 +153,7 @@ func TestVerifyResponseSuccess(t *testing.T) {
 }
 
 func TestVerifyResponseSuspiciousLatency(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Manually create a pending challenge
 	v.mu.Lock()
@@ -191,7 +191,7 @@ func TestVerifyResponseSuspiciousLatency(t *testing.T) {
 }
 
 func TestCleanupExpiredChallenges(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Create expired and valid challenges manually
 	v.mu.Lock()
@@ -225,7 +225,7 @@ func TestCleanupExpiredChallenges(t *testing.T) {
 }
 
 func TestCleanupMultipleExpired(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Create multiple expired challenges
 	v.mu.Lock()
@@ -262,7 +262,7 @@ func TestLatencyThresholds(t *testing.T) {
 }
 
 func TestVerifyResponseChallengeDeleted(t *testing.T) {
-	v := NewVerifier("https://bsc-dataseed1.binance.org")
+	v := NewVerifier([]string{"https://bsc-dataseed1.binance.org"})
 
 	// Manually create a pending challenge
 	v.mu.Lock()

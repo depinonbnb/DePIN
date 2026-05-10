@@ -3,7 +3,11 @@
 // (test/dev) and store/sqlite (prod).
 package store
 
-import "github.com/depinonbnb/depin/internal/types"
+import (
+	"time"
+
+	"github.com/depinonbnb/depin/internal/types"
+)
 
 // Store is the persistence contract. Every reader and writer of node state
 // goes through it. Implementations must be safe for concurrent use.
@@ -70,6 +74,13 @@ type Store interface {
 	// found. Side effects: cleared status resets WarningCount and
 	// SuspiciousEvents; banned status sets IsActive=false.
 	SetNodeCheatStatus(nodeID string, status types.CheatStatus, reason string) bool
+
+	// ConsumeNonce records (wallet, nonce) with a TTL and returns true if the
+	// pair is fresh (just recorded). It returns false if the same (wallet,
+	// nonce) is still present and unexpired — that is the replay-detection
+	// signal. Expired rows are ignored / overwritten so a long-lived nonce
+	// can rotate naturally as it falls outside the TTL window.
+	ConsumeNonce(wallet string, nonce string, ttl time.Duration) bool
 
 	// Close releases any backing resources. The memory implementation is a
 	// no-op; the SQLite implementation closes the DB handle and stops the

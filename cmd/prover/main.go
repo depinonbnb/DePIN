@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -33,6 +34,16 @@ import (
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// freshNonce returns a hex-encoded 16-byte random string used as a one-shot
+// nonce for the EIP-191 messages the prover signs. The server records
+// (wallet, nonce) for 10 minutes (Phase 3 anti-replay) — using random bytes
+// makes accidental collisions astronomically unlikely.
+func freshNonce() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 type Config struct {
 	PrivateKey  string
@@ -152,7 +163,9 @@ func (p *Prover) register() error {
 	fmt.Println("Registering node with API...")
 
 	timestamp := time.Now().UnixMilli()
-	message := fmt.Sprintf("Register node\nWallet: %s\nType: %s\nTimestamp: %d", p.address, p.config.NodeType, timestamp)
+	nonce := freshNonce()
+	message := fmt.Sprintf("Register node\nWallet: %s\nType: %s\nTimestamp: %d\nNonce: %s",
+		p.address, p.config.NodeType, timestamp, nonce)
 	signature, err := p.signMessage(message)
 	if err != nil {
 		return err
@@ -164,6 +177,7 @@ func (p *Prover) register() error {
 		"verification_method": "local-prover",
 		"signature":           signature,
 		"timestamp":           timestamp,
+		"nonce":               nonce,
 	}
 
 	jsonBody, _ := json.Marshal(body)
@@ -232,9 +246,11 @@ func (p *Prover) submitProof() error {
 
 	fmt.Printf("  Query time: %dms\n", queryTime)
 
-	// Step 3: Sign the response
+	// Step 3: Sign the response. Phase 3: nonce is bound into the message.
 	timestamp := time.Now().UnixMilli()
-	message := fmt.Sprintf("Challenge Response\nID: %s\nAnswer: %s\nTimestamp: %d", challenge.ID, nodeResponse.Data, timestamp)
+	nonce := freshNonce()
+	message := fmt.Sprintf("Challenge Response\nID: %s\nAnswer: %s\nTimestamp: %d\nNonce: %s",
+		challenge.ID, nodeResponse.Data, timestamp, nonce)
 	signature, err := p.signMessage(message)
 	if err != nil {
 		return err
@@ -248,6 +264,7 @@ func (p *Prover) submitProof() error {
 		"signature":        signature,
 		"response_time_ms": queryTime,
 		"timestamp":        timestamp,
+		"nonce":            nonce,
 	}
 
 	jsonBody, _ := json.Marshal(submitBody)
