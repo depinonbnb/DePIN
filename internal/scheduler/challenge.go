@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/types"
 )
 
@@ -22,6 +23,11 @@ func (s *Scheduler) runChallengeLoop() {
 // The scheduler trusts that flow to keep its rhythm.
 func (s *Scheduler) runChallengeOnce() {
 	nodes := s.store.GetAllActiveNodes()
+	// Publish bucketed node-population gauges once per cycle. The challenge
+	// loop runs at the highest cadence (typically every minute), so this is
+	// the cheapest place to keep the gauges fresh without dedicating another
+	// goroutine to it.
+	s.publishNodeBuckets(nodes)
 
 	now := time.Now().UnixMilli()
 
@@ -74,6 +80,23 @@ func (s *Scheduler) runChallengeOnce() {
 			s.store.RecordVerificationResult(result)
 			dispatched.Add(1)
 
+			// Histogram: every challenge contributes its observed latency.
+			metrics.VerificationLatencyMs.Observe(float64(result.ResponseTimeMs))
+
+			// Counter: bucket by outcome × method × node type. "abort" =
+			// quorum disagreement (the verifier surfaces this with a
+			// recognisable failure reason — we treat it differently from
+			// outright failure so dashboards can separate the two).
+			outcome := "passed"
+			if !result.Passed {
+				if isQuorumAbort(result.FailureReason) {
+					outcome = "abort"
+				} else {
+					outcome = "failed"
+				}
+			}
+			metrics.ChallengesTotal.WithLabelValues(outcome, "exposed-rpc", string(n.NodeType)).Inc()
+
 			if result.Passed {
 				passed.Add(1)
 			} else {
@@ -97,4 +120,55 @@ func (s *Scheduler) runChallengeOnce() {
 		"passed", passed.Load(),
 		"failed", failed.Load(),
 	)
+}
+
+// isQuorumAbort returns true when the verifier's failure reason looks like a
+// quorum-disagreement abort (rpc.QuorumNoMajority or the verifier-side wrapped
+// version of it). We deliberately match on substrings instead of importing
+// internal/rpc here to avoid a coupling between scheduler and rpc just for
+// one constant; the verifier already strings the constant into its reason.
+func isQuorumAbort(reason string) bool {
+	if reason == "" {
+		return false
+	}
+	for _, needle := range []string{"no quorum", "quorum disagreement", "treated as abort"} {
+		if containsCI(reason, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsCI is a small case-insensitive substring helper used by
+// isQuorumAbort.
+func containsCI(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	// Naive, ASCII-only — the verifier produces ASCII-only failure reasons so
+	// pulling in unicode/utf8 normalisation would be overkill.
+	for i := 0; i+len(substr) <= len(s); i++ {
+		ok := true
+		for j := 0; j < len(substr); j++ {
+			a := s[i+j]
+			b := substr[j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			if a != b {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }

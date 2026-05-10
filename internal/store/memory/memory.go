@@ -4,9 +4,11 @@
 package memory
 
 import (
+	"context"
 	"sync"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/google/uuid"
@@ -26,8 +28,9 @@ type MemoryStore struct {
 	// row expires; reads after that are treated as missing so the same nonce
 	// can be reused legitimately once its window has passed.
 	nonces map[string]int64
-	// snapshots is keyed by cycle_id. Holds published reward cycles (root,
-	// per-wallet proofs, etc). See memory_snapshots.go for reads/writes.
+	// snapshots is keyed by cycle_id. Each entry holds the published metadata
+	// plus the per-wallet proof map. The body of those snapshot methods lives
+	// in memory_snapshots.go to keep this file under the project's 500-LOC cap.
 	snapshots map[string]*snapshotEntry
 	mu        sync.RWMutex
 }
@@ -340,6 +343,11 @@ func (s *MemoryStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 
 // AddSuspiciousEvent appends a structured event and applies escalation rules.
 func (s *MemoryStore) AddSuspiciousEvent(nodeID string, reason string) {
+	// Counter is incremented unconditionally (even if the node lookup fails
+	// below). The "missing_node" reason bucket exists precisely so missing
+	// targets are observable rather than silently dropped.
+	metrics.SuspiciousEventsTotal.WithLabelValues(metrics.BucketSuspiciousReason(reason)).Inc()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -444,6 +452,19 @@ func (s *MemoryStore) ConsumeNonce(wallet string, nonce string, ttl time.Duratio
 
 	s.nonces[key] = now + ttl.Milliseconds()
 	return true
+}
+
+// Ping is the liveness probe used by /ready. For MemoryStore this is always
+// nil — the underlying maps don't have a "down" state. Honors ctx.Err so a
+// pre-cancelled context still surfaces correctly.
+func (s *MemoryStore) Ping(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Close releases backing resources. For MemoryStore this is a no-op.

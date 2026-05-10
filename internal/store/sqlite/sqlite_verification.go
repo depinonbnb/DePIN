@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/types"
 )
 
@@ -204,6 +205,10 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 // AddSuspiciousEvent records a structured event and re-applies escalation
 // rules. Mirrors RecordVerificationResult's escalation path.
 func (s *SQLiteStore) AddSuspiciousEvent(nodeID string, reason string) {
+	// Counter is incremented up front so missing-node calls (which bail
+	// silently below) are still observable as "missing_node".
+	metrics.SuspiciousEventsTotal.WithLabelValues(metrics.BucketSuspiciousReason(reason)).Inc()
+
 	ctx := s.ctx
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

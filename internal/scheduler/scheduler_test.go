@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,10 +115,15 @@ func TestSchedulerRunsAllThreeTickers(t *testing.T) {
 	// Phase 3: the challenge.Generator's *rand.Rand is now mutex-protected,
 	// so we can safely run with multiple workers without -race noise. Use a
 	// non-trivial pool size to actually exercise the concurrent path.
+	//
+	// Phase 5: SnapshotInterval=-1 disables the snapshot cron for this test
+	// so we don't accidentally exercise reward.BuildCycle here (covered by
+	// its own test).
 	sched := New(s, v, Config{
 		HeartbeatInterval:      30 * time.Millisecond,
 		ChallengeCheckInterval: 30 * time.Millisecond,
 		RewardInterval:         30 * time.Millisecond,
+		SnapshotInterval:       -1,
 		RPCWorkers:             4,
 	})
 
@@ -187,6 +193,7 @@ func TestSchedulerDisabledSkipsStart(t *testing.T) {
 		HeartbeatInterval:      10 * time.Millisecond,
 		ChallengeCheckInterval: 10 * time.Millisecond,
 		RewardInterval:         10 * time.Millisecond,
+		SnapshotInterval:       -1,
 		RPCWorkers:             5,
 		Disabled:               true,
 	})
@@ -225,6 +232,7 @@ func TestSchedulerSkipsBannedNodes(t *testing.T) {
 		HeartbeatInterval:      20 * time.Millisecond,
 		ChallengeCheckInterval: 20 * time.Millisecond,
 		RewardInterval:         20 * time.Millisecond,
+		SnapshotInterval:       -1,
 		RPCWorkers:             5,
 	})
 	sched.Start()
@@ -257,6 +265,79 @@ func TestSchedulerCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestSchedulerSnapshotCronPublishes drives the snapshot cron at a millisecond
+// cadence with a single earner in the store, asserts a snapshot row was
+// persisted, and asserts the published cycle id matches the documented format.
+func TestSchedulerSnapshotCronPublishes(t *testing.T) {
+	t.Parallel()
+
+	s := memory.NewMemory()
+	defer s.Close()
+
+	// One node with non-zero TotalPoints (the registration bonus is enough).
+	s.RegisterNode("0xabcdef0000000000000000000000000000000000", types.BscFull, types.LocalProver, "", "")
+
+	v := verification.NewVerifier([]string{"http://nowhere.invalid"})
+	sched := New(s, v, Config{
+		HeartbeatInterval:      24 * time.Hour, // effectively disabled
+		ChallengeCheckInterval: 24 * time.Hour, // effectively disabled
+		RewardInterval:         24 * time.Hour, // effectively disabled
+		SnapshotInterval:       40 * time.Millisecond,
+		RPCWorkers:             1,
+	})
+	sched.Start()
+	time.Sleep(220 * time.Millisecond)
+	if err := sched.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	snap, err := s.GetLatestSnapshot()
+	if err != nil {
+		t.Fatalf("GetLatestSnapshot: %v", err)
+	}
+	if snap == nil {
+		t.Fatalf("expected at least one published snapshot, got none")
+	}
+	if !strings.HasPrefix(snap.CycleID, "cycle-") {
+		t.Errorf("unexpected cycle id format: %q (want cycle-<timestamp>)", snap.CycleID)
+	}
+	if snap.NodeCount == 0 {
+		t.Errorf("snapshot recorded zero leaves; expected at least one earner")
+	}
+}
+
+// TestSchedulerSnapshotDisabled asserts that SnapshotInterval=-1 prevents the
+// snapshot loop from running even when the rest of the scheduler ticks.
+func TestSchedulerSnapshotDisabled(t *testing.T) {
+	t.Parallel()
+
+	s := memory.NewMemory()
+	defer s.Close()
+	s.RegisterNode("0xfeedface00000000000000000000000000000000", types.BscFull, types.LocalProver, "", "")
+
+	v := verification.NewVerifier([]string{"http://nowhere.invalid"})
+	sched := New(s, v, Config{
+		HeartbeatInterval:      30 * time.Millisecond,
+		ChallengeCheckInterval: 30 * time.Millisecond,
+		RewardInterval:         30 * time.Millisecond,
+		SnapshotInterval:       -1, // disabled
+		RPCWorkers:             1,
+	})
+	sched.Start()
+	time.Sleep(120 * time.Millisecond)
+	if err := sched.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	snap, err := s.GetLatestSnapshot()
+	if err != nil {
+		t.Fatalf("GetLatestSnapshot: %v", err)
+	}
+	if snap != nil {
+		t.Errorf("snapshot loop ran despite SnapshotInterval=-1: got cycle %q", snap.CycleID)
+	}
+}
+
 func TestApplyDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -270,6 +351,9 @@ func TestApplyDefaults(t *testing.T) {
 	if got.RewardInterval != defaultRewardInterval {
 		t.Errorf("RewardInterval default = %v, want %v", got.RewardInterval, defaultRewardInterval)
 	}
+	if got.SnapshotInterval != defaultSnapshotInterval {
+		t.Errorf("SnapshotInterval default = %v, want %v", got.SnapshotInterval, defaultSnapshotInterval)
+	}
 	if got.RPCWorkers != defaultRPCWorkers {
 		t.Errorf("RPCWorkers default = %d, want %d", got.RPCWorkers, defaultRPCWorkers)
 	}
@@ -279,10 +363,20 @@ func TestApplyDefaults(t *testing.T) {
 		HeartbeatInterval:      1 * time.Second,
 		ChallengeCheckInterval: 2 * time.Second,
 		RewardInterval:         3 * time.Second,
+		SnapshotInterval:       4 * time.Second,
 		RPCWorkers:             7,
 	}
 	gotCustom := applyDefaults(custom)
 	if gotCustom != custom {
 		t.Errorf("applyDefaults mutated explicit config: got %+v want %+v", gotCustom, custom)
+	}
+
+	// Negative SnapshotInterval is the "explicitly disabled" sentinel and
+	// must round-trip through applyDefaults unchanged. This is the
+	// SnapshotInterval contract that Start() relies on to skip launching
+	// the snapshot loop.
+	disabled := applyDefaults(Config{SnapshotInterval: -1})
+	if disabled.SnapshotInterval != -1 {
+		t.Errorf("negative SnapshotInterval mutated: got %v, want -1", disabled.SnapshotInterval)
 	}
 }

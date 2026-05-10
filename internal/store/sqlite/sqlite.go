@@ -112,6 +112,17 @@ func (s *SQLiteStore) Close() error {
 	return s.closeErr
 }
 
+// Ping is the deep readiness probe consumed by /ready. It honors the caller's
+// context so the readiness handler can fail fast under a tight deadline.
+// Returns the underlying driver error verbatim so the operator sees the real
+// reason in the JSON response.
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	if ctx == nil {
+		ctx = s.ctx
+	}
+	return s.db.PingContext(ctx)
+}
+
 // dsnDirectory returns the parent directory of the database file referenced by
 // the dsn, or "" if no on-disk file is implied (e.g. ":memory:" databases).
 func dsnDirectory(dsn string) string {

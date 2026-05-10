@@ -4,6 +4,7 @@
 package store
 
 import (
+	"context"
 	"math/big"
 	"time"
 
@@ -104,6 +105,13 @@ type Store interface {
 	// the wallet has no proof in that cycle, or if the cycle does not exist.
 	// Returns a non-nil error only on backend failure.
 	GetWalletProof(cycleID string, wallet string) (snapshot *types.Snapshot, proof [][]byte, amount *big.Int, err error)
+
+	// Ping is a lightweight liveness probe used by /ready. The memory
+	// implementation always returns nil; the SQLite implementation calls
+	// db.PingContext so a deep readiness check fails fast when the underlying
+	// connection pool can't reach the database file. Implementations should
+	// honor the context's deadline.
+	Ping(ctx context.Context) error
 
 	// Close releases any backing resources. The memory implementation is a
 	// no-op; the SQLite implementation closes the DB handle and stops the

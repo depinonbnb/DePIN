@@ -74,6 +74,7 @@ func resolveSchedulerConfig() scheduler.Config {
 		HeartbeatInterval:      parseDurationEnv("HEARTBEAT_INTERVAL", 5*time.Minute),
 		ChallengeCheckInterval: parseDurationEnv("CHALLENGE_CHECK_INTERVAL", 1*time.Minute),
 		RewardInterval:         parseDurationEnv("REWARD_INTERVAL", 5*time.Minute),
+		SnapshotInterval:       resolveSnapshotInterval(),
 		RPCWorkers:             parseIntEnv("RPC_WORKERS", 50),
 	}
 
@@ -282,13 +283,15 @@ func main() {
 		sched.Start()
 	}
 
-	// SNAPSHOT_INTERVAL is recognised but inert in this phase — snapshots
-	// are manual via POST /api/admin/snapshot/publish. The cron loop lands
-	// with the observability work in the next phase.
-	if d := resolveSnapshotInterval(); d != 0 {
-		slog.Warn("SNAPSHOT_INTERVAL set but snapshot cron is not yet wired; "+
-			"use POST /api/admin/snapshot/publish for now",
-			"requested", d)
+	// Phase 5 (ADR-0008 cron): SNAPSHOT_INTERVAL is now live — wired into
+	// scheduler.Config via resolveSnapshotInterval. The scheduler skips its
+	// snapshot loop when SNAPSHOT_INTERVAL is "0"/"off"; otherwise it builds
+	// a cycle every interval. Manual publish via POST
+	// /api/admin/snapshot/publish remains supported for ad-hoc operator use.
+	if schedCfg.SnapshotInterval > 0 {
+		slog.Info("snapshot cron active", "interval", schedCfg.SnapshotInterval)
+	} else if schedCfg.SnapshotInterval < 0 {
+		slog.Info("snapshot cron disabled (SNAPSHOT_INTERVAL=0)")
 	}
 
 	router := api.SetupRouter(nodeStore, verifier, adminAPIKey)

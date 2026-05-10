@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -106,6 +107,7 @@ func (h *Handlers) SubmitChallenge(c *gin.Context) {
 
 	// Phase 3: anti-replay nonce consumption.
 	if !h.store.ConsumeNonce(strings.ToLower(node.WalletAddress), req.Nonce, 10*time.Minute) {
+		metrics.NonceReplaysTotal.Inc()
 		c.JSON(http.StatusConflict, gin.H{"error": "replayed nonce"})
 		return
 	}
@@ -121,6 +123,15 @@ func (h *Handlers) SubmitChallenge(c *gin.Context) {
 	})
 
 	h.store.RecordVerificationResult(result)
+
+	// Record verification observation (mirrors the scheduler-side path so
+	// local-prover submissions show up in the same histogram + counter).
+	metrics.VerificationLatencyMs.Observe(float64(result.ResponseTimeMs))
+	outcome := "passed"
+	if !result.Passed {
+		outcome = "failed"
+	}
+	metrics.ChallengesTotal.WithLabelValues(outcome, "local-prover", string(node.NodeType)).Inc()
 
 	c.JSON(http.StatusOK, VerifyResponse{
 		Passed:         result.Passed,

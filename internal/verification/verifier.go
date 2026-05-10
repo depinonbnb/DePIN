@@ -42,6 +42,13 @@ func NewVerifier(trustedRPCEndpoints []string) *Verifier {
 	}
 }
 
+// TrustedRPC exposes the underlying QuorumClient so /ready can reach it for
+// HealthCheck. Returning the live client (not a copy) keeps the readiness
+// probe honest — anything the verifier sees, /ready sees too.
+func (v *Verifier) TrustedRPC() *rpc.QuorumClient {
+	return v.trustedRPC
+}
+
 // Create a challenge for a node
 // We query our trusted node first so we know the right answer.
 // Quorum-RPC abort path: if the trusted quorum can't agree (response.Error

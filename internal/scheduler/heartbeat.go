@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/types"
 )
 
@@ -65,6 +66,9 @@ func (s *Scheduler) runHeartbeatOnce() {
 				)
 				return
 			}
+			// Heartbeat latency is part of the same anti-cheat threshold
+			// distribution, so it shares the verification_latency histogram.
+			metrics.VerificationLatencyMs.Observe(float64(heartbeat.LatencyMs))
 			s.store.RecordHeartbeat(heartbeat)
 			online.Add(1)
 		}(node)

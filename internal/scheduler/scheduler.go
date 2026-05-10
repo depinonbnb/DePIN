@@ -28,7 +28,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/store"
+	"github.com/depinonbnb/depin/internal/types"
 	"github.com/depinonbnb/depin/internal/verification"
 )
 
@@ -37,6 +39,7 @@ const (
 	defaultHeartbeatInterval      = 5 * time.Minute
 	defaultChallengeCheckInterval = 1 * time.Minute
 	defaultRewardInterval         = 5 * time.Minute
+	defaultSnapshotInterval       = 7 * 24 * time.Hour // weekly per ADR-0008
 	defaultRPCWorkers             = 50
 )
 
@@ -51,6 +54,11 @@ type Config struct {
 	ChallengeCheckInterval time.Duration
 	// RewardInterval — how often the uptime-reward ticker fires.
 	RewardInterval time.Duration
+	// SnapshotInterval — how often the snapshot cron ticker fires. Default
+	// is weekly (7*24h, per ADR-0008). Set to a negative value to disable
+	// the snapshot loop entirely without disabling the rest of the scheduler.
+	// Zero is treated as "use default" (weekly).
+	SnapshotInterval time.Duration
 	// RPCWorkers — maximum concurrent outbound RPC operations across all
 	// three tickers. Implemented as a semaphore.
 	RPCWorkers int
@@ -94,6 +102,11 @@ func New(s store.Store, v *verification.Verifier, cfg Config) *Scheduler {
 }
 
 // applyDefaults fills any zero field with the corresponding default.
+//
+// SnapshotInterval has a tri-state contract:
+//   - 0  => use defaultSnapshotInterval (weekly).
+//   - <0 => caller has explicitly disabled the snapshot loop.
+//   - >0 => caller-supplied cadence.
 func applyDefaults(cfg Config) Config {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = defaultHeartbeatInterval
@@ -104,6 +117,9 @@ func applyDefaults(cfg Config) Config {
 	if cfg.RewardInterval <= 0 {
 		cfg.RewardInterval = defaultRewardInterval
 	}
+	if cfg.SnapshotInterval == 0 {
+		cfg.SnapshotInterval = defaultSnapshotInterval
+	}
 	if cfg.RPCWorkers <= 0 {
 		cfg.RPCWorkers = defaultRPCWorkers
 	}
@@ -113,6 +129,10 @@ func applyDefaults(cfg Config) Config {
 // Start launches the ticker goroutines. It is a no-op if cfg.Disabled is true
 // or if Start has already been called. Calling Start after Close is also a
 // no-op (the context is already cancelled).
+//
+// The snapshot loop is started only when cfg.SnapshotInterval > 0; a negative
+// value explicitly disables it (handy for tests and operators who only want
+// manual `POST /api/admin/snapshot/publish`).
 func (s *Scheduler) Start() {
 	s.mu.Lock()
 	if s.cfg.Disabled || s.started || s.closed {
@@ -126,13 +146,24 @@ func (s *Scheduler) Start() {
 		"heartbeat_interval", s.cfg.HeartbeatInterval,
 		"challenge_check_interval", s.cfg.ChallengeCheckInterval,
 		"reward_interval", s.cfg.RewardInterval,
+		"snapshot_interval", s.cfg.SnapshotInterval,
 		"rpc_workers", s.cfg.RPCWorkers,
 	)
+
+	// Publish the worker pool capacity gauge once at startup. The inflight
+	// gauge is updated inside acquire/release.
+	metrics.RPCWorkerCapacity.Set(float64(s.cfg.RPCWorkers))
+	metrics.RPCWorkerInflight.Set(0)
 
 	s.wg.Add(3)
 	go s.runHeartbeatLoop()
 	go s.runChallengeLoop()
 	go s.runUptimeRewardLoop()
+
+	if s.cfg.SnapshotInterval > 0 {
+		s.wg.Add(1)
+		go s.runSnapshotLoop()
+	}
 }
 
 // Close cancels the scheduler's context and waits for in-flight workers to
@@ -155,9 +186,13 @@ func (s *Scheduler) Close() error {
 // acquire blocks until either a worker slot is available or the scheduler's
 // context is cancelled. Returns true if a slot was acquired (and the caller
 // MUST eventually call release), false if the context was cancelled first.
+//
+// On a successful acquire we publish the new pool occupancy via the inflight
+// gauge; the gauge is paired with the release call's decrement.
 func (s *Scheduler) acquire() bool {
 	select {
 	case s.pool <- struct{}{}:
+		metrics.RPCWorkerInflight.Set(float64(len(s.pool)))
 		return true
 	case <-s.ctx.Done():
 		return false
@@ -168,6 +203,7 @@ func (s *Scheduler) acquire() bool {
 func (s *Scheduler) release() {
 	select {
 	case <-s.pool:
+		metrics.RPCWorkerInflight.Set(float64(len(s.pool)))
 	default:
 		// Defensive: this should never happen because every release is paired
 		// with a successful acquire. If it does, log it loudly rather than
@@ -180,6 +216,10 @@ func (s *Scheduler) release() {
 // returns when ctx is cancelled. The first tick fires after `interval`, not
 // immediately — this matches Go's time.Ticker semantics and gives the server
 // a clean startup phase before background work begins.
+//
+// Every successful tick stamps depin_scheduler_last_tick_seconds so /ready
+// can answer "when was the last tick?". The gauge is set AFTER `do` returns
+// so the timestamp reflects the completion of the tick, not its kickoff.
 func (s *Scheduler) tickerLoop(name string, interval time.Duration, do func()) {
 	defer s.wg.Done()
 
@@ -194,6 +234,42 @@ func (s *Scheduler) tickerLoop(name string, interval time.Duration, do func()) {
 			return
 		case <-ticker.C:
 			do()
+			metrics.SchedulerLastTick.WithLabelValues(name).SetToCurrentTime()
 		}
+	}
+}
+
+// publishNodeBuckets snapshots the current active-node population into the
+// gauge family so /metrics and /ready can both see the same picture. Called
+// at the top of every challenge cycle (the highest-frequency loop) so the
+// labels stay near-fresh without an extra goroutine.
+func (s *Scheduler) publishNodeBuckets(nodes []*types.NodeRegistration) {
+	metrics.NodesActive.Set(float64(len(nodes)))
+
+	byStatus := map[string]int{
+		"clean":   0,
+		"warning": 0,
+		"flagged": 0,
+		"banned":  0,
+	}
+	byType := make(map[string]int)
+	for _, n := range nodes {
+		switch n.CheatStatus {
+		case types.StatusClean:
+			byStatus["clean"]++
+		case types.StatusWarning:
+			byStatus["warning"]++
+		case types.StatusFlagged:
+			byStatus["flagged"]++
+		case types.StatusBanned:
+			byStatus["banned"]++
+		}
+		byType[string(n.NodeType)]++
+	}
+	for k, v := range byStatus {
+		metrics.NodesByStatus.WithLabelValues(k).Set(float64(v))
+	}
+	for k, v := range byType {
+		metrics.NodesByType.WithLabelValues(k).Set(float64(v))
 	}
 }

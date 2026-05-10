@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 )
@@ -88,7 +89,23 @@ func (s *limiterStore) get(key string) *rate.Limiter {
 // RateLimitMiddleware enforces per-IP rate limiting at perIPRPS requests per
 // second with the given burst. On limit it returns 429 Too Many Requests with
 // a Retry-After header (seconds, rounded up).
+//
+// Calls metrics.RateLimit429Total with the route label "global" or "strict".
+// Routes are inferred from the rate parameters: anything matching the strict
+// caps below is "strict", everything else is "global". The router calls a
+// labelled variant when it wants explicit naming.
 func RateLimitMiddleware(perIPRPS rate.Limit, burst int) gin.HandlerFunc {
+	label := "global"
+	if perIPRPS == StrictIPRPS && burst == StrictIPBurst {
+		label = "strict"
+	}
+	return RateLimitMiddlewareLabelled(perIPRPS, burst, label)
+}
+
+// RateLimitMiddlewareLabelled is RateLimitMiddleware with an explicit label
+// for the metrics emission. Used by callers that want to distinguish multiple
+// strict limits (e.g. /nodes/register vs /challenges/submit) in dashboards.
+func RateLimitMiddlewareLabelled(perIPRPS rate.Limit, burst int, label string) gin.HandlerFunc {
 	store := newLimiterStore(perIPRPS, burst, maxLimiters)
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
@@ -97,6 +114,7 @@ func RateLimitMiddleware(perIPRPS rate.Limit, burst int) gin.HandlerFunc {
 		}
 		lim := store.get(ip)
 		if !lim.Allow() {
+			metrics.RateLimit429Total.WithLabelValues(label).Inc()
 			retry := retryAfterSeconds(perIPRPS)
 			c.Header("Retry-After", fmt.Sprintf("%d", retry))
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
@@ -115,8 +133,14 @@ func RateLimitMiddleware(perIPRPS rate.Limit, burst int) gin.HandlerFunc {
 // Routes that don't carry a wallet (or carry one outside walletField) skip
 // the limiter — we don't want CPU-cheap parses to drop into the limiter
 // unnecessarily.
+//
+// 429 emissions are tagged "wallet_<walletField>" in the rate_limit_429_total
+// counter (e.g. "wallet_wallet_address" or "wallet_node_id") so a single
+// dashboard panel can split rate-limit kinds without an explicit per-route
+// label.
 func WalletRateLimitMiddleware(rps rate.Limit, burst int, walletField string) gin.HandlerFunc {
 	store := newLimiterStore(rps, burst, maxLimiters)
+	label := "wallet_" + walletField
 	return func(c *gin.Context) {
 		// Only POSTs carry a wallet body. Don't read GET bodies.
 		if c.Request.Method != http.MethodPost {
@@ -141,6 +165,7 @@ func WalletRateLimitMiddleware(rps rate.Limit, burst int, walletField string) gi
 
 		key := strings.ToLower(wallet)
 		if !store.get(key).Allow() {
+			metrics.RateLimit429Total.WithLabelValues(label).Inc()
 			retry := retryAfterSeconds(rps)
 			c.Header("Retry-After", fmt.Sprintf("%d", retry))
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "wallet rate limit exceeded"})

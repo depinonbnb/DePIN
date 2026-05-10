@@ -318,3 +318,81 @@ Wallet lookups are case-insensitive — the store normalises to lower-case befor
 - The cron job that ticks `SNAPSHOT_INTERVAL`. Phase 4 keeps publishing manual; `cmd/server/main.go` recognises the env var and logs "inactive in Phase 4" so operators know it's reserved for Phase 5.
 - IPFS publishing of the leaf set. The `ipfs_cid` field exists on the snapshot row + the publish request body, but no actual IPFS client is wired up — operators who want the trustless re-derive-and-verify story have to publish the JSON externally and pass the resulting CID into the publish call.
 
+## 12. Observability (Phase 5)
+
+Phase 5 lands the operator-facing observability surface: Prometheus metrics, deep-readiness probe, and the snapshot cron that finally wires `SNAPSHOT_INTERVAL` from §10's reserved placeholder into a live ticker.
+
+### 12.1 Endpoints
+
+| Method | Path | Purpose | Middleware |
+|---|---|---|---|
+| GET | `/metrics` | Prometheus scrape (text exposition) | **none** — no rate limit, no CORS |
+| GET | `/health` | Shallow liveness (`{"status":"ok"}`) | global rate limit only |
+| GET | `/ready` | Deep readiness with per-check breakdown | global rate limit only |
+
+`/metrics` is mounted on the API listener (port `PORT`, default 3000) rather than a sidecar :9090 listener. Single-port keeps the binary trivial to deploy; if a deployment grows past one operator team it's a one-line change to split into two `*http.Server` instances. `internal/api/router.go` registers `/metrics` BEFORE the global middleware stack so scrapes are unrestricted.
+
+### 12.2 Metrics families
+
+All metrics are prefixed `depin_`. Counters end in `_total`. Histograms end in `_seconds` for time-based observations and `_ms` for explicit millisecond observations (verifier already operates in milliseconds; we don't want to pay float conversions on every observation).
+
+| Family | Type | Labels |
+|---|---|---|
+| `depin_challenges_total` | counter | `result` (passed/failed/abort), `method` (exposed-rpc/local-prover), `node_type` |
+| `depin_quorum_failures_total` | counter | — |
+| `depin_rate_limit_429_total` | counter | `route` (global/strict/wallet_*) |
+| `depin_nonce_replays_total` | counter | — |
+| `depin_ssrf_rejections_total` | counter | — |
+| `depin_snapshots_published_total` | counter | — |
+| `depin_snapshot_build_failures_total` | counter | — |
+| `depin_claim_lookups_total` | counter | `result` (found/not_found) |
+| `depin_suspicious_events_total` | counter | `kind` (latency/answer_mismatch/missing_node/other) |
+| `depin_admin_actions_total` | counter | `action` (clear/warn/ban) |
+| `depin_nodes_active` | gauge | — |
+| `depin_nodes_by_status` | gauge | `status` (clean/warning/flagged/banned) |
+| `depin_nodes_by_type` | gauge | `type` |
+| `depin_last_snapshot_published_seconds` | gauge | — |
+| `depin_scheduler_last_tick_seconds` | gauge | `ticker` (heartbeat/challenge/uptime/snapshot) |
+| `depin_rpc_worker_inflight` | gauge | — |
+| `depin_rpc_worker_capacity` | gauge | — |
+| `depin_verification_latency_ms` | histogram | — |
+| `depin_snapshot_build_seconds` | histogram | — |
+| `depin_quorum_latency_ms` | histogram | — |
+| `depin_http_request_seconds` | histogram | `route`, `method`, `status` (status_class) |
+
+Bucket boundaries for `depin_verification_latency_ms` are aligned with the anti-cheat thresholds in §7 so a single histogram view can spot threshold drift.
+
+### 12.3 Readiness checks
+
+`/ready` returns 200 when all mandatory checks pass and 503 when any do not. The `degraded` rollup (snapshot stale, or trusted RPC reachable-but-not-all) returns 200 so the load balancer doesn't drain a pod that is only partially impaired.
+
+| Check | Source | Failure semantics |
+|---|---|---|
+| `store` | `Store.Ping(ctx)` (1s deadline) | mandatory |
+| `scheduler` | `depin_scheduler_last_tick_seconds{ticker=…}` | informational (zero ticks => zero timestamps; not a fail) |
+| `trusted_rpc` | `QuorumClient.HealthCheck` (1s per endpoint) | mandatory; degraded when any endpoint reachable, fail when none |
+| `snapshot` | `Store.GetLatestSnapshot()` | informational; `stale` when older than 14 days, `never` if no publish yet |
+
+### 12.4 Snapshot cron
+
+Phase 5 retires the §10.5 reservation: `SNAPSHOT_INTERVAL` is now live. Configuration:
+
+| Var | Default | Behaviour |
+|---|---|---|
+| `SNAPSHOT_INTERVAL` | `168h` (weekly per ADR-0008) | parsed via `time.ParseDuration`; `0` / `off` / `false` / `disabled` / `no` disables the cron without disabling the rest of the scheduler |
+
+Cycle id format: `cycle-<RFC3339 UTC>` (e.g. `cycle-2026-05-09T15:00:00Z`). On `BuildCycle` returning `ErrNoEarners` the cron logs at info level and continues; on any other error it bumps `depin_snapshot_build_failures_total` and continues to the next tick. Manual publish via `POST /api/admin/snapshot/publish` remains supported.
+
+### 12.5 New env vars
+
+| Var | Default | Notes |
+|---|---|---|
+| `SNAPSHOT_INTERVAL` | `168h` | See §12.4 |
+| `METRICS_ENABLED` | `true` | Reserved — currently always on. Operators who don't want `/metrics` exposed should put the API behind a path-allowlisting reverse proxy |
+
+## 11. Open questions
+
+- Persistent store: Postgres vs. SQLite vs. embedded KV (Bolt/Badger)? Postgres if we expect multi-instance; SQLite if single-instance is fine for now
+- Should `TRUSTED_RPC` be plural (a quorum of trusted RPCs) so a single bad reference can't poison verification?
+- How do we rotate `AuthToken` if leaked?
+- How are challenges expired and garbage-collected from the in-memory store at scale?

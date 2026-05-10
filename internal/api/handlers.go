@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/rpc"
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/types"
@@ -109,6 +110,7 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 	// ALLOW_PRIVATE_RPC=1 disables for local docker-compose dev.
 	if req.RPCEndpoint != "" {
 		if err := rpc.IsAllowedURL(req.RPCEndpoint); err != nil {
+			metrics.SSRFRejectionsTotal.Inc()
 			c.JSON(http.StatusBadRequest, gin.H{"error": "rpc endpoint not allowed (must be public)"})
 			return
 		}
@@ -137,6 +139,7 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 	// 10-minute TTL matches the timestamp drift window times two so a slow
 	// client can't legitimately submit twice within the window.
 	if !h.store.ConsumeNonce(strings.ToLower(req.WalletAddress), req.Nonce, 10*time.Minute) {
+		metrics.NonceReplaysTotal.Inc()
 		c.JSON(http.StatusConflict, gin.H{"error": "replayed nonce"})
 		return
 	}

@@ -13,6 +13,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 
 	"github.com/depinonbnb/depin/internal/types"
@@ -74,6 +75,7 @@ func Suite(t *testing.T, mk func(t testing.TB) Store) {
 
 	// Lifecycle ------------------------------------------------------------
 	t.Run("Close_Idempotent", func(t *testing.T) { runCloseIdempotent(t, mk) })
+	t.Run("Ping_OK", func(t *testing.T) { runPingOK(t, mk) })
 }
 
 // mustClose closes the store and reports any error. It exists because every
@@ -272,3 +274,27 @@ func runCloseIdempotent(t *testing.T, mk func(t testing.TB) Store) {
 	}
 }
 
+// runPingOK exercises Store.Ping against an open store. The contract is "no
+// error when the backend is reachable" — both implementations must satisfy
+// that. We don't try to fail the SQLite store here (that path is covered
+// indirectly by the api package's TestReadyStoreDown, which closes the store
+// then probes /ready).
+func runPingOK(t *testing.T, mk func(t testing.TB) Store) {
+	s := mk(t)
+	defer mustClose(t, s)
+
+	if err := s.Ping(context.Background()); err != nil {
+		t.Errorf("Ping(open) returned error: %v", err)
+	}
+
+	// A pre-cancelled context must surface ctx.Err verbatim so callers can
+	// distinguish "deadline" from "store down".
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.Ping(ctx); err == nil {
+		// Memory store may legitimately return nil for a cancelled ctx if it
+		// doesn't honor the deadline; we only insist on the OK path. A nil
+		// here is acceptable.
+		t.Logf("Ping(cancelled) returned nil — implementation is allowed to ignore ctx for free operations")
+	}
+}

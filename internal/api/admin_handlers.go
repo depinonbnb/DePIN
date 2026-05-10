@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -72,6 +73,8 @@ func (h *Handlers) ReviewNode(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
 		return
 	}
+
+	metrics.AdminActionsTotal.WithLabelValues(req.Action).Inc()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

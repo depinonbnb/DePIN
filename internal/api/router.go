@@ -81,6 +81,12 @@ func resolveAllowedOrigins() []string {
 func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
 	router := gin.Default()
 
+	// /metrics MUST be mounted BEFORE the global middleware stack: Prometheus
+	// scrapes are server-side and should be neither rate-limited nor
+	// CORS-checked. Mounting it on the same listener (rather than a separate
+	// :9090) keeps the binary single-port; SPEC §12 documents the choice.
+	router.GET("/metrics", metricsHandler())
+
 	// CORS: env-driven allowlist (CORS_ALLOWED_ORIGINS).
 	router.Use(CORSMiddleware(resolveAllowedOrigins()))
 
@@ -89,13 +95,14 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 	router.Use(RateLimitMiddleware(GlobalIPRPS, GlobalIPBurst))
 
 	handlers := NewHandlers(store, verifier)
+	hc := newHealthChecker(store, verifier)
 
-	// Shallow process-up probe — load balancers should hit this. The deep
-	// readiness probe (/ready, with backend / scheduler / RPC checks) lands
-	// with the observability work in the next phase.
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
+	// Health check (shallow liveness) and readiness (deep). /health stays a
+	// trivial process-up probe so load balancers don't restart the pod when a
+	// downstream blip happens; /ready is the deep probe that LBs should drain
+	// traffic on. See health_handlers.go for the rationale.
+	router.GET("/health", hc.shallowHealth)
+	router.GET("/ready", hc.readiness)
 
 	api := router.Group("/api")
 	{

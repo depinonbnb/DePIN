@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/reward"
 	"github.com/gin-gonic/gin"
 )
@@ -44,7 +45,9 @@ func (h *Handlers) PublishSnapshot(c *gin.Context) {
 		return
 	}
 
+	buildStart := time.Now()
 	cycle, err := reward.BuildCycle(h.store, cycleID)
+	metrics.SnapshotBuildSeconds.Observe(time.Since(buildStart).Seconds())
 	if err != nil {
 		if errors.Is(err, reward.ErrNoEarners) {
 			// ADR-0008 §Decision: zero-earner cycles are valid; we just don't
@@ -59,6 +62,7 @@ func (h *Handlers) PublishSnapshot(c *gin.Context) {
 			})
 			return
 		}
+		metrics.SnapshotBuildFailures.Inc()
 		slog.Default().Error("PublishSnapshot: BuildCycle failed",
 			"cycle_id", cycleID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build cycle"})
@@ -67,12 +71,15 @@ func (h *Handlers) PublishSnapshot(c *gin.Context) {
 
 	publishedAt := time.Now().UnixMilli()
 	if err := cycle.Persist(h.store, publishedAt, req.IPFSCID); err != nil {
+		metrics.SnapshotBuildFailures.Inc()
 		slog.Default().Error("PublishSnapshot: persist failed",
 			"cycle_id", cycleID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist snapshot"})
 		return
 	}
 
+	metrics.SnapshotsPublished.Inc()
+	metrics.LastSnapshotPublished.SetToCurrentTime()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":      true,
@@ -139,10 +146,12 @@ func (h *Handlers) GetWalletClaim(c *gin.Context) {
 		return
 	}
 	if snap == nil {
+		metrics.ClaimLookupsTotal.WithLabelValues("not_found").Inc()
 		c.JSON(http.StatusNotFound, gin.H{"error": "wallet has no claim in this cycle"})
 		return
 	}
 
+	metrics.ClaimLookupsTotal.WithLabelValues("found").Inc()
 	c.JSON(http.StatusOK, gin.H{
 		"wallet":   wallet,
 		"cycle_id": snap.CycleID,
@@ -180,9 +189,11 @@ func (h *Handlers) GetWalletClaimLatest(c *gin.Context) {
 		return
 	}
 	if snap == nil {
+		metrics.ClaimLookupsTotal.WithLabelValues("not_found").Inc()
 		c.JSON(http.StatusNotFound, gin.H{"error": "wallet has no claim in latest cycle"})
 		return
 	}
+	metrics.ClaimLookupsTotal.WithLabelValues("found").Inc()
 	c.JSON(http.StatusOK, gin.H{
 		"wallet":   wallet,
 		"cycle_id": snap.CycleID,

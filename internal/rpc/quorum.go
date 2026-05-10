@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/types"
 )
 
@@ -88,7 +89,13 @@ func NewQuorum(endpoints []string) *QuorumClient {
 // RpcResponse{Success: false, Error: QuorumNoMajority} when no answer reaches
 // floor(N/2) + 1.
 func (q *QuorumClient) ExecuteChallenge(challenge *types.Challenge) RpcResponse {
+	start := time.Now()
+	defer func() {
+		metrics.QuorumLatencyMs.Observe(float64(time.Since(start).Milliseconds()))
+	}()
+
 	if len(q.clients) == 0 {
+		metrics.QuorumFailuresTotal.Inc()
 		return RpcResponse{Success: false, Error: QuorumNoMajority}
 	}
 
@@ -142,6 +149,7 @@ func (q *QuorumClient) ExecuteChallenge(challenge *types.Challenge) RpcResponse 
 
 	majority := len(q.clients)/2 + 1
 	if winner == nil || winner.count < majority {
+		metrics.QuorumFailuresTotal.Inc()
 		// Build a debug-friendly summary for ops.
 		summary := summarizeForLog(results)
 		q.logger.Warn("rpc: quorum_failure — no majority answer",
