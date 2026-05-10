@@ -250,9 +250,9 @@ Shutdown order (per ADR-0007): HTTP listener first (stop accepting), schedulers 
 | 1 | `internal/store/store.go` | RESOLVED (Phase 1 persistence) — `internal/store/store.go` is now the `Store` interface; `internal/store/memory/` keeps the volatile implementation for tests/dev and `internal/store/sqlite/` adds the SQLite-backed production store per [ADR-0006](adr/0006-sqlite-mvp.md). Both implementations are exercised by the conformance suite at `internal/store/conformance.go` so they cannot drift; `internal/integration/` runs the full router end-to-end against the SQLite backend. Postgres swap path remains documented in ADR-0006 |
 | 2 | `internal/api/middleware.go` | RESOLVED (Phase 0 hygiene) — `AdminAuthMiddleware` is now always applied. When `ADMIN_API_KEY` is empty it fails closed with 503 ("admin endpoints disabled"). Key comparison uses `crypto/subtle.ConstantTimeCompare` to defeat timing attacks |
 | 3 | `cmd/server/main.go` | Default port 3000 conflicts with the frontend's expected 3001. Pick one and align both projects |
-| 4 | `internal/verification/verifier.go` | Anti-cheat is latency-based only; no statistical anomaly detection |
+| 4 | `internal/verification/verifier.go` | Anti-cheat is latency-based only; no statistical anomaly detection (still open — Phase 3 punted; revisit alongside Merkle rewards in Phase 4) |
 | 5 | `internal/scheduler/` | RESOLVED (Phase 2 — ADR-0007) — three server-side tickers now drive verification: heartbeat (every `HEARTBEAT_INTERVAL`, default 5m), challenge dispatcher (every `CHALLENGE_CHECK_INTERVAL`, default 1m, gated per-node by `NodeType.ChallengeFrequencyMinutes()`), and uptime reward (every `REWARD_INTERVAL`, default 5m, calling `AwardUptimePoints` and finally retiring that dead-code path). All three share a single semaphore-bounded worker pool (`RPC_WORKERS`, default 50). Set `SCHEDULER_ENABLED=false` to skip `Start()` for tests/dev. Local-prover nodes are intentionally NOT dispatched server-side — they continue to pull via `/challenges/request`. See `internal/scheduler/scheduler_test.go` for end-to-end coverage |
-| 6 | future | Merkle snapshot rewards and on-chain Distributor — punted to a later phase |
+| 6 | `internal/reward/` + `internal/store/*` (snapshots) + `internal/api/snapshot_handlers.go` | RESOLVED (Phase 4 — ADR-0008) — Merkle snapshot rewards. The backend now aggregates lifetime points by wallet, builds a sorted-leaf / sorted-pair tree of `keccak256(abi.encodePacked(address, uint256))` leaves, persists root + per-wallet proofs in `snapshots` / `snapshot_proofs`, and exposes them via `GET /api/snapshots/latest`, `GET /api/snapshots/:cycleId`, `GET /api/wallet/:wallet/claim/:cycleId`, and `GET /api/wallet/:wallet/claim/latest`. Cycle publishing is manual via `POST /api/admin/snapshot/publish` for Phase 4; `SNAPSHOT_INTERVAL` env var is reserved as a no-op placeholder for the Phase 5 cron. The Solidity Distributor lives in a separate repo and is intentionally NOT in scope here. See §10 |
 | 7 | `internal/api/ratelimit.go` | RESOLVED (Phase 3) — per-IP global limit (60 req/min), tighter per-IP cap on `/nodes/register` and `/challenges/submit` (10/min), and per-wallet caps (5 register/min, 30 submit/min). LRU map of `*rate.Limiter` capped at 10k keys. Implemented with `golang.org/x/time/rate`. Admin routes are not rate-limited (already auth-gated) |
 | 8 | `.gitignore` | RESOLVED (Phase 0 hygiene) — `server.exe`, `server.exe~`, `info.md`, `rem.txt` untracked from git; `.gitignore` updated to cover those plus forward-looking `data.db*` / `data/` for the SQLite persistence work in [ADR-0006](adr/0006-sqlite-mvp.md) |
 | 9 | `info.md` | RESOLVED — covered by gap #8 |
@@ -268,9 +268,53 @@ Shutdown order (per ADR-0007): HTTP listener first (stop accepting), schedulers 
 
 > **Tests**: a single conformance suite at `internal/store/conformance.go` is run against both `MemoryStore` and `SQLiteStore` from their respective `*_test.go` entry points so the two implementations cannot drift. End-to-end flow is exercised in `internal/integration/integration_test.go`. Run via `go test ./... -race -count=1` (the `-race` flag must stay clean across the full run).
 
-## 11. Open questions
+## 10. Rewards (Phase 4, ADR-0008)
 
-- Persistent store: Postgres vs. SQLite vs. embedded KV (Bolt/Badger)? Postgres if we expect multi-instance; SQLite if single-instance is fine for now
-- Should `TRUSTED_RPC` be plural (a quorum of trusted RPCs) so a single bad reference can't poison verification?
-- How do we rotate `AuthToken` if leaked?
-- How are challenges expired and garbage-collected from the in-memory store at scale?
+Phase 4 lands the Merkle snapshot reward flow described in [ADR-0008](adr/0008-merkle-snapshot-rewards.md). The off-chain backend periodically (manually for now) aggregates points per wallet and publishes a Merkle root; operators submit a Merkle proof to a Solidity Distributor on-chain to claim BNB. Constant gas per claim, no per-event tx cost, anyone can re-derive the tree from the published proofs and verify the root.
+
+### 10.1 Encoding contract (CRITICAL)
+
+The Distributor uses OpenZeppelin's `MerkleProof.verify`. Mismatched encoding produces silently-failing proofs. The implementation therefore commits to:
+
+- **Leaf encoding**: `keccak256(abi.encodePacked(address, uint256))` — that is, `20 bytes (raw address) || 32 bytes (uint256, big-endian, zero-padded)`. *Not* `abi.encode` (which would 32-pad the address).
+- **Sorted leaves**: ascending by raw address bytes (NOT lexicographic hex strings).
+- **Sorted pairs**: at every internal node, `hashPair(a, b) = keccak256(min(a,b) || max(a,b))`. The proof is therefore commutative — OpenZeppelin's `MerkleProof.verify` does not carry left/right bits.
+
+`internal/reward/merkle.go` is the single source of truth for these rules. Tests in `internal/reward/merkle_test.go` pin every invariant down (including a regression test that fails if someone "fixes" the encoder to use `abi.encode`).
+
+### 10.2 Cycle aggregation (Option A)
+
+Phase 4 ships **Option A**: the leaf amount is the wallet's *lifetime* point total (`SUM(TotalPoints)` across all of the wallet's nodes, excluding banned ones). The Solidity Distributor is responsible for "amount already claimed per wallet per cycle" state — re-publishing the same wallet with a higher lifetime total just lets them claim the difference.
+
+Option B (per-cycle deltas: `points-since-last-snapshot` per wallet) is a future refinement. Revisit when governance lands.
+
+### 10.3 Persistence
+
+Two SQLite tables (in `001_initial.sql`):
+
+- `snapshots` — one row per published cycle. `cycle_id` is opaque text (caller's choice; the snapshot job picks the format, e.g. `cycle-7` or `2026-W18`). `root` and `total_amount` are stored as `0x`-prefixed hex strings so they round-trip cleanly through TEXT columns regardless of size.
+- `snapshot_proofs` — one row per wallet per cycle, holding `(amount TEXT, proof_json TEXT)`. The proof is a JSON array of `0x`-prefixed sibling hashes.
+
+`SaveSnapshot` is idempotent on `cycle_id`: re-publishing the same cycle replaces the prior row + every proof inside one BEGIN IMMEDIATE transaction.
+
+The conformance suite (`internal/store/conformance_snapshots.go`) exercises both backends so the in-memory and SQLite implementations cannot drift.
+
+### 10.4 API
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/admin/snapshot/publish` | Build + persist a cycle. Body: `{"cycle_id": "...", "ipfs_cid": "..."}`. Admin-only |
+| GET | `/api/snapshots/latest` | Most recently published cycle's metadata (no proofs) |
+| GET | `/api/snapshots/:cycleId` | Specific cycle's metadata |
+| GET | `/api/wallet/:walletAddress/claim/:cycleId` | `{wallet, cycle_id, root, amount, proof}` for an on-chain claim |
+| GET | `/api/wallet/:walletAddress/claim/latest` | Convenience: latest cycle + this wallet's proof |
+
+Wallet lookups are case-insensitive — the store normalises to lower-case before persistence.
+
+### 10.5 Out of scope (still)
+
+- The Solidity Distributor contract. ADR-0008 §Decision pins this to a separate repo. This service does not call contracts.
+- The funding wallet for the reward pool. That belongs to the operations runbook.
+- The cron job that ticks `SNAPSHOT_INTERVAL`. Phase 4 keeps publishing manual; `cmd/server/main.go` recognises the env var and logs "inactive in Phase 4" so operators know it's reserved for Phase 5.
+- IPFS publishing of the leaf set. The `ipfs_cid` field exists on the snapshot row + the publish request body, but no actual IPFS client is wired up — operators who want the trustless re-derive-and-verify story have to publish the JSON externally and pass the resulting CID into the publish call.
+

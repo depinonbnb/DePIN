@@ -97,19 +97,31 @@ CREATE TABLE IF NOT EXISTS nonces_seen (
 
 CREATE INDEX IF NOT EXISTS idx_nonces_expires ON nonces_seen(expires_at);
 
+-- snapshots stores one row per published reward cycle (ADR-0008). cycle_id is
+-- an opaque caller-supplied string ("cycle-N", or a date stamp, or whatever the
+-- snapshot job uses); root and total_amount are hex-encoded so amounts beyond
+-- 2^63 (BNB wei is 1e18 per token, easily exceeds int64) round-trip cleanly.
+-- Snapshots are append-only — never UPDATE a published cycle.
 CREATE TABLE IF NOT EXISTS snapshots (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    cycle_id     INTEGER NOT NULL UNIQUE,
+    cycle_id     TEXT    NOT NULL UNIQUE,
     root         TEXT    NOT NULL,
-    total_amount INTEGER NOT NULL DEFAULT 0,
+    total_amount TEXT    NOT NULL DEFAULT '0x0',
+    node_count   INTEGER NOT NULL DEFAULT 0,
     published_at INTEGER NOT NULL,
-    ipfs_cid     TEXT
+    ipfs_cid     TEXT    NOT NULL DEFAULT ''
 ) STRICT;
 
+CREATE INDEX IF NOT EXISTS idx_snapshots_published_at ON snapshots(published_at DESC);
+
+-- snapshot_proofs holds the (wallet, amount, proof) triples for a cycle. amount
+-- is hex-encoded big.Int; proof_json is a JSON array of hex strings, each one
+-- a sibling hash on the path from leaf to root. Wallet addresses are stored
+-- lower-cased so lookups match regardless of how the caller cased the param.
 CREATE TABLE IF NOT EXISTS snapshot_proofs (
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
     wallet      TEXT    NOT NULL,
-    amount      INTEGER NOT NULL,
+    amount      TEXT    NOT NULL,
     proof_json  TEXT    NOT NULL,
     PRIMARY KEY (snapshot_id, wallet)
 ) STRICT;

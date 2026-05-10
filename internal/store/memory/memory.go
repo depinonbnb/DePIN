@@ -26,7 +26,10 @@ type MemoryStore struct {
 	// row expires; reads after that are treated as missing so the same nonce
 	// can be reused legitimately once its window has passed.
 	nonces map[string]int64
-	mu     sync.RWMutex
+	// snapshots is keyed by cycle_id. Holds published reward cycles (root,
+	// per-wallet proofs, etc). See memory_snapshots.go for reads/writes.
+	snapshots map[string]*snapshotEntry
+	mu        sync.RWMutex
 }
 
 // NewMemory constructs an empty MemoryStore. It never returns nil.
@@ -37,6 +40,7 @@ func NewMemory() *MemoryStore {
 		verificationHistory: make(map[string][]*types.VerificationResult),
 		heartbeats:          make(map[string][]*types.HeartbeatRecord),
 		nonces:              make(map[string]int64),
+		snapshots:           make(map[string]*snapshotEntry),
 	}
 }
 

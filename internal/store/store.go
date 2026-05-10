@@ -4,6 +4,7 @@
 package store
 
 import (
+	"math/big"
 	"time"
 
 	"github.com/depinonbnb/depin/internal/types"
@@ -82,8 +83,39 @@ type Store interface {
 	// can rotate naturally as it falls outside the TTL window.
 	ConsumeNonce(wallet string, nonce string, ttl time.Duration) bool
 
+	// SaveSnapshot persists a published reward cycle (ADR-0008). The call is
+	// idempotent on snapshot.CycleID — re-publishing the same cycle replaces
+	// the prior root/proofs atomically so re-runs of the snapshot job converge
+	// to the same canonical row. Amounts in proofs are hex-encoded big.Int
+	// strings to round-trip through SQLite's TEXT columns without truncation.
+	// Wallets are normalised to lower-case before persistence.
+	SaveSnapshot(snapshot *types.Snapshot, proofs map[string]SnapshotProof) error
+
+	// GetLatestSnapshot returns the most recently published cycle, or nil if
+	// no snapshots have been published. Does NOT load per-wallet proofs.
+	GetLatestSnapshot() (*types.Snapshot, error)
+
+	// GetSnapshotByCycle returns the snapshot for a specific cycle id, or nil
+	// if not found. Does NOT load per-wallet proofs.
+	GetSnapshotByCycle(cycleID string) (*types.Snapshot, error)
+
+	// GetWalletProof fetches the (snapshot, proof, amount) tuple for a wallet
+	// in a given cycle. Returns (nil, nil, nil, nil) if the cycle exists but
+	// the wallet has no proof in that cycle, or if the cycle does not exist.
+	// Returns a non-nil error only on backend failure.
+	GetWalletProof(cycleID string, wallet string) (snapshot *types.Snapshot, proof [][]byte, amount *big.Int, err error)
+
 	// Close releases any backing resources. The memory implementation is a
 	// no-op; the SQLite implementation closes the DB handle and stops the
 	// prune goroutine. Safe to call multiple times.
 	Close() error
+}
+
+// SnapshotProof is the persisted view of one wallet's claim row inside a
+// cycle. Amount is the raw big.Int (hex-encoded on the wire / in storage);
+// Proof is the sibling-hash path produced by reward.BuildTree.
+type SnapshotProof struct {
+	Wallet string
+	Amount *big.Int
+	Proof  [][]byte
 }

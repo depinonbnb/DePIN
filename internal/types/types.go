@@ -198,3 +198,21 @@ const (
 	LatencyPublicRPC     uint64 = 300  // Public RPCs typically take 300ms+
 	LatencyMaxAllowed    uint64 = 5000 // Timeout after this
 )
+
+// Snapshot is one published Merkle reward cycle (ADR-0008). The on-chain
+// Distributor consumes Root + per-wallet (amount, proof) tuples; this struct
+// is the off-chain shadow the API hands out for operator claim flows.
+//
+// Encoding notes:
+//   - Root and TotalAmount are hex-encoded (with the "0x" prefix) so amounts
+//     beyond int64 round-trip cleanly through SQLite TEXT columns.
+//   - CycleID is a caller-supplied opaque string; the snapshot job decides
+//     the format (e.g. "cycle-1", "2026-W18"). Idempotent on (cycle_id).
+type Snapshot struct {
+	CycleID     string `json:"cycle_id"`
+	Root        string `json:"root"`         // hex-encoded keccak256 root, "0x..."
+	TotalAmount string `json:"total_amount"` // hex-encoded big.Int sum, "0x..."
+	NodeCount   int    `json:"node_count"`
+	PublishedAt int64  `json:"published_at"` // unix-ms
+	IPFSCID     string `json:"ipfs_cid,omitempty"`
+}

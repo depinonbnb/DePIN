@@ -59,11 +59,14 @@ func configureLogger() {
 }
 
 // resolveSchedulerConfig reads scheduler-related env vars and applies the
-// ADR-0007 defaults for any that are unset/invalid. Recognised vars:
+// ADR-0007 / ADR-0008 defaults for any that are unset/invalid. Recognised
+// vars:
 //
 //	HEARTBEAT_INTERVAL       (Go duration, e.g. "5m"; default 5m)
 //	CHALLENGE_CHECK_INTERVAL (Go duration; default 1m)
 //	REWARD_INTERVAL          (Go duration; default 5m)
+//	SNAPSHOT_INTERVAL        (Go duration; default 168h = weekly per ADR-0008,
+//	                         "0" or "off" disables the snapshot cron)
 //	RPC_WORKERS              (positive int; default 50)
 //	SCHEDULER_ENABLED        (truthy unless "0", "false", "no", "off")
 func resolveSchedulerConfig() scheduler.Config {
@@ -81,6 +84,31 @@ func resolveSchedulerConfig() scheduler.Config {
 		cfg.Disabled = false
 	}
 	return cfg
+}
+
+// resolveSnapshotInterval interprets SNAPSHOT_INTERVAL with three branches:
+//
+//   - unset       → return 0 so applyDefaults uses the weekly default.
+//   - "0"/"off"   → return -1 so applyDefaults preserves "explicitly disabled".
+//   - duration    → return the parsed duration.
+//
+// Anything unparseable falls back to the weekly default with a warning.
+func resolveSnapshotInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("SNAPSHOT_INTERVAL"))
+	if raw == "" {
+		return 0
+	}
+	switch strings.ToLower(raw) {
+	case "0", "off", "false", "disabled", "no":
+		return -1
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid SNAPSHOT_INTERVAL; using weekly default",
+			"value", raw, "default", 7*24*time.Hour)
+		return 0
+	}
+	return d
 }
 
 // parseDurationEnv parses a Go duration env var; returns def on miss/error.
@@ -252,6 +280,15 @@ func main() {
 		slog.Info("scheduler disabled via SCHEDULER_ENABLED env")
 	} else {
 		sched.Start()
+	}
+
+	// SNAPSHOT_INTERVAL is recognised but inert in this phase — snapshots
+	// are manual via POST /api/admin/snapshot/publish. The cron loop lands
+	// with the observability work in the next phase.
+	if d := resolveSnapshotInterval(); d != 0 {
+		slog.Warn("SNAPSHOT_INTERVAL set but snapshot cron is not yet wired; "+
+			"use POST /api/admin/snapshot/publish for now",
+			"requested", d)
 	}
 
 	router := api.SetupRouter(nodeStore, verifier, adminAPIKey)

@@ -90,7 +90,9 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 
 	handlers := NewHandlers(store, verifier)
 
-	// Health check
+	// Shallow process-up probe — load balancers should hit this. The deep
+	// readiness probe (/ready, with backend / scheduler / RPC checks) lands
+	// with the observability work in the next phase.
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
@@ -133,6 +135,17 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 		api.GET("/leaderboard", handlers.GetLeaderboard)
 		api.GET("/stats", handlers.GetNetworkStats)
 
+		// Reward snapshots (ADR-0008). Public read endpoints — anyone can
+		// re-derive the tree from these to verify the published root. Order
+		// matters: the static "latest" route must be registered BEFORE the
+		// parametric "/:cycleId" route, otherwise Gin would route a literal
+		// "latest" through the param handler. Same for the wallet/claim
+		// pair below.
+		api.GET("/snapshots/latest", handlers.GetLatestSnapshot)
+		api.GET("/snapshots/:cycleId", handlers.GetSnapshotByCycle)
+		api.GET("/wallet/:walletAddress/claim/latest", handlers.GetWalletClaimLatest)
+		api.GET("/wallet/:walletAddress/claim/:cycleId", handlers.GetWalletClaim)
+
 		// Admin endpoints (protected by API key).
 		// AdminAuthMiddleware fails closed when adminAPIKey is empty
 		// (returns 503), so it MUST always be applied. Admin routes are
@@ -143,6 +156,11 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 			admin.GET("/flagged", handlers.GetFlaggedNodes)
 			admin.POST("/review/:nodeId", handlers.ReviewNode)
 			admin.POST("/test/create-node", handlers.TestCreateNode)
+
+			// Snapshot publish (ADR-0008). Manual for Phase 4; the
+			// SNAPSHOT_INTERVAL env var is reserved for the Phase 5
+			// scheduler hook (see cmd/server/main.go).
+			admin.POST("/snapshot/publish", handlers.PublishSnapshot)
 		}
 	}
 

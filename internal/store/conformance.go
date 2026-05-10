@@ -66,6 +66,12 @@ func Suite(t *testing.T, mk func(t testing.TB) Store) {
 	t.Run("SetNodeCheatStatus_Idempotent", func(t *testing.T) { runIdempotentSetCheatStatus(t, mk) })
 	t.Run("AwardUptimePoints_Monotonic", func(t *testing.T) { runMonotonicAwardUptimePoints(t, mk) })
 
+	// Snapshots (ADR-0008) -------------------------------------------------
+	t.Run("SaveSnapshot_RoundTrip", func(t *testing.T) { runSaveSnapshotRoundTrip(t, mk) })
+	t.Run("SaveSnapshot_IdempotentByCycleID", func(t *testing.T) { runSaveSnapshotIdempotent(t, mk) })
+	t.Run("GetLatestSnapshot_PicksMaxPublishedAt", func(t *testing.T) { runGetLatestSnapshot(t, mk) })
+	t.Run("GetWalletProof_MissingCycleAndWallet", func(t *testing.T) { runGetWalletProofMissing(t, mk) })
+
 	// Lifecycle ------------------------------------------------------------
 	t.Run("Close_Idempotent", func(t *testing.T) { runCloseIdempotent(t, mk) })
 }
@@ -265,3 +271,4 @@ func runCloseIdempotent(t *testing.T, mk func(t testing.TB) Store) {
 		t.Errorf("second Close returned error: %v", err)
 	}
 }
+
