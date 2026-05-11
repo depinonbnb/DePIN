@@ -35,6 +35,32 @@ Two verification methods:
 - **Exposed RPC (Recommended)** - You expose an RPC endpoint so we can query your node directly. This is the easiest option.
 - **Local Prover** - You download and run an open-source script that submits proofs on your behalf. You can review all the code before running it.
 
+## Operator quickstart
+
+If you just want to run a node and earn:
+
+1. **Sync a BNB Chain node.** Pick a type from the table above and follow the official [BSC](https://docs.bnbchain.org/bnb-smart-chain/developers/node_operators/full_node/) or [opBNB](https://docs.bnbchain.org/bnb-opbnb/advanced/local-node/) docs.
+2. **Register your node.** Sign a registration message with your wallet and `POST /api/nodes/register` (or use the web frontend). You'll get back a node ID and auth token.
+3. **Pick a verification path.**
+   - **Exposed RPC** — make your node's JSON-RPC reachable from the server, set `rpc_endpoint` during registration, and you're done. The server probes you every few minutes.
+   - **Local Prover** — install [`cmd/prover`](cmd/prover/), set `PROVER_PRIVATE_KEY` to your wallet key, and let it poll `/api/challenges/request` on your behalf.
+4. **Stay online.** Points accrue from heartbeats + passed challenges. See "Anti-cheat" in [docs/SPEC.md §7](docs/SPEC.md) for the latency thresholds — proxying via public RPCs gets you flagged.
+5. **Claim rewards** — see below.
+
+## Earning and claiming rewards
+
+Points accrue continuously per [ADR-0008](docs/adr/0008-merkle-snapshot-rewards.md). On a fixed cadence (default weekly, set by `SNAPSHOT_INTERVAL`), the server publishes a **Merkle snapshot** of lifetime points per wallet. Operators claim BNB by submitting a Merkle proof to the on-chain Distributor contract.
+
+To fetch your proof for the current cycle:
+
+```bash
+curl http://localhost:3000/api/wallet/<YOUR_WALLET>/claim/latest
+```
+
+Response gives you `{root, amount, proof}` — pass these to the Distributor's `claim()` call. The on-chain contract lives in a separate repo (per ADR-0008 §10.5).
+
+See [SPEC §10](docs/SPEC.md) for the leaf encoding contract (`keccak256(abi.encodePacked(address, uint256))`, sorted leaves, sorted pairs) — don't reimplement without reading it.
+
 ## What's in this repo
 
 ```
@@ -43,12 +69,16 @@ cmd/
 └── prover/         # Open-source prover script
 
 internal/
-├── api/            # HTTP handlers and routing
-├── challenge/      # Challenge generation
-├── rpc/            # RPC client for talking to nodes
-├── store/          # Data storage
-├── types/          # Type definitions
-└── verification/   # Verification logic
+├── api/            # HTTP handlers, routing, middleware, rate limiting
+├── challenge/      # Challenge generation (block hash, balance, sync, etc.)
+├── rpc/            # JSON-RPC client + trusted-RPC quorum + SSRF guard
+├── scheduler/      # Heartbeat, challenge, uptime, and snapshot tickers
+├── store/          # Store interface + memory and SQLite backends
+├── reward/         # Merkle snapshot builder (ADR-0008)
+├── metrics/        # Prometheus metrics
+├── verification/   # Verification + anti-cheat
+├── types/          # Shared types and constants
+└── integration/    # End-to-end tests (router + sqlite + fake RPC)
 ```
 
 ## Setup
@@ -74,6 +104,14 @@ go run cmd/prover/main.go --private-key YOUR_KEY --node-rpc http://localhost:854
 go build -o prover cmd/prover/main.go
 ./prover --private-key YOUR_KEY
 ```
+
+## Testing
+
+```bash
+go test ./... -race -count=1
+```
+
+The `-race` flag is required — the project guarantees a race-clean test suite. A single conformance suite (`internal/store/conformance.go`) runs against both the memory and SQLite backends so they cannot drift, and `internal/integration/` runs the full router end-to-end.
 
 ## Environment Variables
 
@@ -137,6 +175,14 @@ All three tickers share one bounded worker pool sized by `RPC_WORKERS`. Set `SCH
 | `DEPIN_API` | `http://localhost:3000/api` | Server URL |
 | `NODE_TYPE` | `bsc-full` | Self-declared node type. One of: `bsc-full`, `bsc-fast`, `bsc-archive`, `opbnb-full`, `opbnb-fast` |
 | `INTERVAL` | `300000` | Submit interval in ms (5 min) |
+
+## Architecture and design docs
+
+- [docs/SPEC.md](docs/SPEC.md) — full system specification: API surface, data model, verification protocol, anti-cheat rules, schedulers, rewards, observability
+- [docs/adr/](docs/adr/) — architecture decision records (ADR-0001 through ADR-0009 covering Go/Gin, in-memory then SQLite store, dual verification modes, scheduler-driven verification, Merkle snapshot rewards, trusted-RPC quorum)
+- [docs/design/persistence.md](docs/design/persistence.md) — store interface and migration design
+
+The SPEC is the source of truth for behavior. The README is the operator-facing front door; if the two disagree, the SPEC wins and the README is the bug.
 
 ## Website
 
