@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+.claude-flow
+data/
+*.db
+*.db-*
+docs/
+*.exe
+*.exe~
+SECURITY_REPORT.json
+SECURITY_AUDIT*.json
+.env
+.env.*
+!.env.example
+info.md
+rem.txt
