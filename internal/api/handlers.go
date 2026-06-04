@@ -226,14 +226,16 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 	nodes := h.store.GetAllActiveNodes()
 
 	type LeaderboardEntry struct {
-		Rank              int            `json:"rank"`
-		NodeID            string         `json:"node_id"`
-		WalletAddress     string         `json:"wallet_address"`
-		NodeType          types.NodeType `json:"node_type"`
-		TotalPoints       uint64         `json:"total_points"`
-		TotalUptimeHours  float64        `json:"total_uptime_hours"`
-		ChallengePassRate float64        `json:"challenge_pass_rate"`
-		RegisteredAt      int64          `json:"registered_at"`
+		Rank                  int               `json:"rank"`
+		NodeID                string            `json:"node_id"`
+		WalletAddress         string            `json:"wallet_address"`
+		NodeType              types.NodeType    `json:"node_type"`
+		TotalPoints           uint64            `json:"total_points"`
+		TotalUptimeHours      float64           `json:"total_uptime_hours"`
+		TotalChallengesPassed uint64            `json:"total_challenges_passed"`
+		ChallengePassRate     float64           `json:"challenge_pass_rate"`
+		CheatStatus           types.CheatStatus `json:"cheat_status"`
+		RegisteredAt          int64             `json:"registered_at"`
 	}
 
 	entries := make([]LeaderboardEntry, 0, len(nodes))
@@ -245,12 +247,14 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 
 		stats := h.store.GetNodeStats(node.ID)
 		entry := LeaderboardEntry{
-			NodeID:           node.ID,
-			WalletAddress:    node.WalletAddress,
-			NodeType:         node.NodeType,
-			TotalPoints:      node.TotalPoints,
-			TotalUptimeHours: float64(node.TotalUptimeMinutes) / 60.0,
-			RegisteredAt:     node.RegisteredAt,
+			NodeID:                node.ID,
+			WalletAddress:         node.WalletAddress,
+			NodeType:              node.NodeType,
+			TotalPoints:           node.TotalPoints,
+			TotalUptimeHours:      float64(node.TotalUptimeMinutes) / 60.0,
+			TotalChallengesPassed: node.TotalChallengesPassed,
+			CheatStatus:           node.CheatStatus,
+			RegisteredAt:          node.RegisteredAt,
 		}
 		if stats != nil {
 			entry.ChallengePassRate = stats.ChallengePassRate
@@ -281,14 +285,34 @@ func (h *Handlers) GetNetworkStats(c *gin.Context) {
 	byType := make(map[string]int)
 	byMethod := make(map[string]int)
 
+	var activeNodes int
+	var totalVerifications uint64
+	var totalPassed uint64
+	var totalPoints uint64
+
 	for _, node := range nodes {
 		byType[string(node.NodeType)]++
 		byMethod[string(node.VerificationMethod)]++
+		if node.IsActive {
+			activeNodes++
+		}
+		totalPassed += node.TotalChallengesPassed
+		totalVerifications += node.TotalChallengesPassed + node.TotalChallengesFailed
+		totalPoints += node.TotalPoints
+	}
+
+	var successRate float64
+	if totalVerifications > 0 {
+		successRate = float64(totalPassed) / float64(totalVerifications) * 100
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_nodes": len(nodes),
-		"by_type":     byType,
-		"by_method":   byMethod,
+		"total_nodes":               len(nodes),
+		"active_nodes":              activeNodes,
+		"total_verifications":       totalVerifications,
+		"verification_success_rate": successRate,
+		"total_points":              totalPoints,
+		"by_type":                   byType,
+		"by_method":                 byMethod,
 	})
 }
