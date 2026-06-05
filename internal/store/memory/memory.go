@@ -154,6 +154,10 @@ func (s *MemoryStore) RecordVerificationResult(result *types.VerificationResult)
 	{
 		if result.Passed {
 			node.TotalChallengesPassed++
+			// Award challenge points so passed challenges actually pay out.
+			// Routes through here for both the exposed-RPC scheduler path and
+			// local-prover submissions.
+			node.TotalPoints += node.NodeType.PointsPerChallenge()
 		} else {
 			node.TotalChallengesFailed++
 		}

@@ -73,6 +73,7 @@ func runRecordVerificationPassedFailed(t *testing.T, mk func(t testing.TB) Store
 	defer mustClose(t, s)
 
 	node := s.RegisterNode("0xtest", types.BscFull, types.LocalProver, "", "")
+	bonus := node.TotalPoints // registration bonus baseline
 
 	s.RecordVerificationResult(&types.VerificationResult{
 		ChallengeID:    "c1",
@@ -87,6 +88,11 @@ func runRecordVerificationPassedFailed(t *testing.T, mk func(t testing.TB) Store
 	}
 	if afterPass.LastVerifiedAt != 1000 {
 		t.Errorf("expected LastVerifiedAt=1000, got %d", afterPass.LastVerifiedAt)
+	}
+	// A passed challenge must award PointsPerChallenge on top of the bonus.
+	wantPass := bonus + types.BscFull.PointsPerChallenge()
+	if afterPass.TotalPoints != wantPass {
+		t.Errorf("expected TotalPoints=%d after pass, got %d", wantPass, afterPass.TotalPoints)
 	}
 
 	s.RecordVerificationResult(&types.VerificationResult{
@@ -103,6 +109,10 @@ func runRecordVerificationPassedFailed(t *testing.T, mk func(t testing.TB) Store
 	}
 	if afterFail.LastVerifiedAt != 2000 {
 		t.Errorf("expected LastVerifiedAt=2000, got %d", afterFail.LastVerifiedAt)
+	}
+	// A failed challenge must not award any points.
+	if afterFail.TotalPoints != wantPass {
+		t.Errorf("expected TotalPoints unchanged at %d after fail, got %d", wantPass, afterFail.TotalPoints)
 	}
 }
 

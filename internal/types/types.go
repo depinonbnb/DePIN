@@ -47,6 +47,25 @@ func (n NodeType) PointsPerHour() uint64 {
 	}
 }
 
+// Points awarded for each passed verification challenge. Tiered like uptime so
+// harder-to-run nodes earn more per challenge.
+func (n NodeType) PointsPerChallenge() uint64 {
+	switch n {
+	case BscArchive:
+		return 5
+	case BscFull:
+		return 3
+	case BscFast:
+		return 2
+	case OpbnbFull:
+		return 2
+	case OpbnbFast:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func (n NodeType) MinUptimePercent() uint8 {
 	switch n {
 	case BscArchive, BscFull:

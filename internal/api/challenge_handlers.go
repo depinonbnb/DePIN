@@ -124,6 +124,16 @@ func (h *Handlers) SubmitChallenge(c *gin.Context) {
 
 	h.store.RecordVerificationResult(result)
 
+	// Record a heartbeat so local-prover nodes accrue uptime points. The
+	// heartbeat ticker only probes exposed-RPC nodes, so without this a prover
+	// node would never be credited for uptime by the reward ticker.
+	h.store.RecordHeartbeat(&types.HeartbeatRecord{
+		NodeID:    req.NodeID,
+		Timestamp: time.Now().UnixMilli(),
+		IsSynced:  result.Passed,
+		LatencyMs: result.ResponseTimeMs,
+	})
+
 	// Record verification observation (mirrors the scheduler-side path so
 	// local-prover submissions show up in the same histogram + counter).
 	metrics.VerificationLatencyMs.Observe(float64(result.ResponseTimeMs))

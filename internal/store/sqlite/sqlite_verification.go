@@ -135,8 +135,8 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 	// counter updates if the node is gone" semantics. Without this guard the
 	// FK constraint on verification_results would surface as an error rather
 	// than a silent no-op.
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ?`, result.NodeID).Scan(&exists); err != nil {
+	var nodeTypeStr string
+	if err := tx.QueryRowContext(ctx, `SELECT node_type FROM nodes WHERE id = ?`, result.NodeID).Scan(&nodeTypeStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// No node — drop the row to mirror the in-memory store's
 			// "if ok" guard (which silently skipped both history append and
@@ -165,12 +165,14 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 	}
 
 	if result.Passed {
+		challengePoints := types.NodeType(nodeTypeStr).PointsPerChallenge()
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE nodes SET
 				total_challenges_passed = total_challenges_passed + 1,
+				total_points = total_points + ?,
 				last_verified_at = ?
 			WHERE id = ?`,
-			result.Timestamp, result.NodeID,
+			challengePoints, result.Timestamp, result.NodeID,
 		); err != nil {
 			slog.Default().Error("sqlite: bump pass counter", "node_id", result.NodeID, "error", err)
 			return
