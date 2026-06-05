@@ -27,6 +27,15 @@ func (s *SQLiteStore) RecordHeartbeat(heartbeat *types.HeartbeatRecord) {
 		syncedInt, heartbeat.LatencyMs, heartbeat.PeersCount,
 	); err != nil {
 		slog.Default().Error("sqlite: RecordHeartbeat failed", "node_id", heartbeat.NodeID, "error", err)
+		return
+	}
+
+	// Reflect the latest sync state on the node so the API can surface it.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE nodes SET last_heartbeat_at = ?, is_synced = ? WHERE id = ?`,
+		heartbeat.Timestamp, syncedInt, heartbeat.NodeID,
+	); err != nil {
+		slog.Default().Error("sqlite: RecordHeartbeat node update failed", "node_id", heartbeat.NodeID, "error", err)
 	}
 }
 

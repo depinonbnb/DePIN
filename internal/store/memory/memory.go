@@ -217,6 +217,12 @@ func (s *MemoryStore) RecordHeartbeat(heartbeat *types.HeartbeatRecord) {
 	}
 
 	s.heartbeats[heartbeat.NodeID] = history
+
+	// Reflect the latest sync state on the node so the API can surface it.
+	if node, ok := s.nodes[heartbeat.NodeID]; ok {
+		node.LastHeartbeatAt = heartbeat.Timestamp
+		node.IsSynced = heartbeat.IsSynced
+	}
 }
 
 // GetHeartbeats returns retained heartbeats since the given unix-ms timestamp.

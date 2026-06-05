@@ -114,13 +114,16 @@ func (p *Prover) Start() error {
 	fmt.Printf("Local node connected - Block #%d\n", blockNum)
 	fmt.Printf("Synced: %v\n", synced)
 
-	if !synced {
-		return fmt.Errorf("node is not fully synced - please wait for sync to complete")
-	}
-
-	// Register with the API
+	// Register regardless of sync state so the node shows up on the dashboard
+	// right away (as "syncing"). Points only start accruing once the node is
+	// fully synced and the prover begins passing challenges — see the loop.
 	if err := p.register(); err != nil {
 		return fmt.Errorf("registration failed: %v", err)
+	}
+
+	if !synced {
+		fmt.Println("\nNode registered and visible on the dashboard as 'syncing'.")
+		fmt.Println("The prover will start submitting proofs and earning points once your node is fully synced.")
 	}
 
 	// Start the proof loop
@@ -128,8 +131,13 @@ func (p *Prover) Start() error {
 	fmt.Println("\nStarting proof loop...")
 
 	for p.running {
-		if err := p.submitProof(); err != nil {
-			log.Printf("proof submission error: %v", err)
+		isSynced, _, _ := p.nodeRPC.GetSyncStatus()
+		if isSynced {
+			if err := p.submitProof(); err != nil {
+				log.Printf("proof submission error: %v", err)
+			}
+		} else {
+			fmt.Println("Node still syncing — no points accrue yet. Re-checking next interval...")
 		}
 		time.Sleep(time.Duration(p.config.IntervalMs) * time.Millisecond)
 	}

@@ -53,7 +53,16 @@ func (s *Scheduler) runUptimeRewardOnce() {
 		}
 
 		hbs := s.store.GetHeartbeats(node.ID, since)
-		if len(hbs) == 0 {
+		// Only a node that reported synced in the window earns uptime points.
+		// Being online but out of sync does not accrue rewards.
+		synced := false
+		for _, hb := range hbs {
+			if hb.IsSynced {
+				synced = true
+				break
+			}
+		}
+		if !synced {
 			skipped++
 			continue
 		}

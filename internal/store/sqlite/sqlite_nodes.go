@@ -20,7 +20,7 @@ const nodeColumns = `
 	registered_at, last_verified_at, last_heartbeat_at,
 	total_challenges_passed, total_challenges_failed,
 	total_uptime_minutes, total_points,
-	is_active, cheat_status, warning_count, cheat_reason
+	is_active, is_synced, cheat_status, warning_count, cheat_reason
 `
 
 // nowMillis returns time.Now().UnixMilli(). Centralized so tests could swap it
@@ -36,6 +36,7 @@ func scanNode(row interface {
 	var (
 		n        types.NodeRegistration
 		isActive int64
+		isSynced int64
 	)
 	if err := row.Scan(
 		&n.ID, &n.WalletAddress, &n.NodeType, &n.VerificationMethod,
@@ -43,11 +44,12 @@ func scanNode(row interface {
 		&n.RegisteredAt, &n.LastVerifiedAt, &n.LastHeartbeatAt,
 		&n.TotalChallengesPassed, &n.TotalChallengesFailed,
 		&n.TotalUptimeMinutes, &n.TotalPoints,
-		&isActive, &n.CheatStatus, &n.WarningCount, &n.CheatReason,
+		&isActive, &isSynced, &n.CheatStatus, &n.WarningCount, &n.CheatReason,
 	); err != nil {
 		return nil, err
 	}
 	n.IsActive = isActive != 0
+	n.IsSynced = isSynced != 0
 	return &n, nil
 }
 
@@ -417,6 +419,10 @@ func persistNodeTx(ctx context.Context, tx *sql.Tx, n *types.NodeRegistration) e
 	if n.IsActive {
 		isActive = 1
 	}
+	isSynced := 0
+	if n.IsSynced {
+		isSynced = 1
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes SET
 			wallet_address          = ?,
@@ -432,6 +438,7 @@ func persistNodeTx(ctx context.Context, tx *sql.Tx, n *types.NodeRegistration) e
 			total_uptime_minutes    = ?,
 			total_points            = ?,
 			is_active               = ?,
+			is_synced               = ?,
 			cheat_status            = ?,
 			warning_count           = ?,
 			cheat_reason            = ?
@@ -441,7 +448,7 @@ func persistNodeTx(ctx context.Context, tx *sql.Tx, n *types.NodeRegistration) e
 		n.RegisteredAt, n.LastVerifiedAt, n.LastHeartbeatAt,
 		n.TotalChallengesPassed, n.TotalChallengesFailed,
 		n.TotalUptimeMinutes, n.TotalPoints,
-		isActive, string(n.CheatStatus), n.WarningCount, n.CheatReason,
+		isActive, isSynced, string(n.CheatStatus), n.WarningCount, n.CheatReason,
 		n.ID,
 	); err != nil {
 		return fmt.Errorf("persist node: %w", err)

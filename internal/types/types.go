@@ -133,6 +133,7 @@ type NodeRegistration struct {
 	TotalUptimeMinutes    uint64             `json:"total_uptime_minutes"`
 	TotalPoints           uint64             `json:"total_points"`
 	IsActive              bool               `json:"is_active"`
+	IsSynced              bool               `json:"is_synced"`
 
 	// Anti-cheat
 	CheatStatus      CheatStatus `json:"cheat_status"`

@@ -235,6 +235,8 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 		TotalChallengesPassed uint64            `json:"total_challenges_passed"`
 		ChallengePassRate     float64           `json:"challenge_pass_rate"`
 		CheatStatus           types.CheatStatus `json:"cheat_status"`
+		IsSynced              bool              `json:"is_synced"`
+		LastHeartbeatAt       int64             `json:"last_heartbeat_at"`
 		RegisteredAt          int64             `json:"registered_at"`
 	}
 
@@ -254,6 +256,8 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 			TotalUptimeHours:      float64(node.TotalUptimeMinutes) / 60.0,
 			TotalChallengesPassed: node.TotalChallengesPassed,
 			CheatStatus:           node.CheatStatus,
+			IsSynced:              node.IsSynced,
+			LastHeartbeatAt:       node.LastHeartbeatAt,
 			RegisteredAt:          node.RegisteredAt,
 		}
 		if stats != nil {
