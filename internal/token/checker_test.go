@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -96,5 +97,60 @@ func TestAllowFailOpenPolicyWhenUnknown(t *testing.T) {
 	}
 	if mk(false).Allow("0xabc") {
 		t.Error("fail-closed: unknown wallet should be blocked")
+	}
+}
+
+func TestScaleTokens(t *testing.T) {
+	got := ScaleTokens(big.NewInt(1_000_000), 18)
+	want, _ := new(big.Int).SetString("1000000000000000000000000", 10)
+	if got.Cmp(want) != 0 {
+		t.Fatalf("ScaleTokens(1e6, 18) = %s, want %s", got, want)
+	}
+	// Zero decimals is identity.
+	if ScaleTokens(big.NewInt(5), 0).Cmp(big.NewInt(5)) != 0 {
+		t.Error("ScaleTokens with 0 decimals should be identity")
+	}
+}
+
+func TestRefreshSkipsFreshEntries(t *testing.T) {
+	min := ScaleTokens(big.NewInt(1), 0)
+	var calls int
+	c := NewWithBalanceFunc(Config{MinBalance: min, CacheTTL: time.Hour},
+		func(context.Context, common.Address) (*big.Int, error) {
+			calls++
+			return big.NewInt(10), nil
+		})
+	w := "0x4444444444444444444444444444444444444444"
+	c.Refresh(context.Background(), []string{w})
+	c.Refresh(context.Background(), []string{w}) // still within TTL: must hit cache
+	if calls != 1 {
+		t.Fatalf("balanceFn called %d times, want 1 (second refresh should be a cache hit)", calls)
+	}
+}
+
+func TestCacheTTLExpiry(t *testing.T) {
+	min := ScaleTokens(big.NewInt(1), 0)
+	c := NewWithBalanceFunc(Config{MinBalance: min, CacheTTL: time.Minute, FailOpen: false},
+		func(context.Context, common.Address) (*big.Int, error) {
+			return big.NewInt(10), nil
+		})
+	// Drive the clock deterministically (white-box: same package).
+	ec := c.(*evmChecker)
+	base := time.Unix(1_000_000, 0)
+	ec.now = func() time.Time { return base }
+
+	w := "0x5555555555555555555555555555555555555555"
+	c.Refresh(context.Background(), []string{w})
+	if h, known := c.IsHolder(w); !known || !h {
+		t.Fatalf("fresh entry IsHolder=(%v,%v), want (true,true)", h, known)
+	}
+
+	// Advance past the TTL: the entry goes stale and reads as unknown.
+	ec.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if _, known := c.IsHolder(w); known {
+		t.Error("entry past TTL should read as unknown")
+	}
+	if c.Allow(w) {
+		t.Error("stale entry with fail-closed should not be allowed")
 	}
 }

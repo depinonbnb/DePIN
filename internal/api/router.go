@@ -51,8 +51,8 @@ func CORSMiddleware(allowedOrigins []string) gin.HandlerFunc {
 	}
 
 	const (
-		methodList  = "GET, POST, OPTIONS"
-		headerList  = "Content-Type, Authorization, X-Admin-Key"
+		methodList   = "GET, POST, OPTIONS"
+		headerList   = "Content-Type, Authorization, X-Admin-Key"
 		preflightTTL = "300" // 5 minutes
 	)
 
