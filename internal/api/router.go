@@ -18,9 +18,24 @@ import (
 	"strings"
 
 	"github.com/depinonbnb/depin/internal/store"
+	"github.com/depinonbnb/depin/internal/token"
 	"github.com/depinonbnb/depin/internal/verification"
 	"github.com/gin-gonic/gin"
 )
+
+// RouterOption customizes the handlers wired into the router. Existing callers
+// that pass no options keep the previous behavior (token gating disabled).
+type RouterOption func(*Handlers)
+
+// WithHolderChecker injects the token-gate checker used to withhold points from
+// wallets below the minimum balance and to populate the holds_token field.
+func WithHolderChecker(c token.Checker) RouterOption {
+	return func(h *Handlers) {
+		if c != nil {
+			h.holder = c
+		}
+	}
+}
 
 // CORSMiddleware reads CORS_ALLOWED_ORIGINS at construction time and returns
 // a Gin handler that echoes the Origin header only when it is in the allow
@@ -78,7 +93,7 @@ func resolveAllowedOrigins() []string {
 	return out
 }
 
-func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey string) *gin.Engine {
+func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey string, opts ...RouterOption) *gin.Engine {
 	router := gin.Default()
 
 	// /metrics MUST be mounted BEFORE the global middleware stack: Prometheus
@@ -95,6 +110,9 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 	router.Use(RateLimitMiddleware(GlobalIPRPS, GlobalIPBurst))
 
 	handlers := NewHandlers(store, verifier)
+	for _, opt := range opts {
+		opt(handlers)
+	}
 	hc := newHealthChecker(store, verifier)
 
 	// Health check (shallow liveness) and readiness (deep). /health stays a

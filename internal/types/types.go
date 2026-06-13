@@ -178,6 +178,11 @@ type VerificationResult struct {
 	Suspicious     bool   `json:"suspicious"`
 	SuspiciousNote string `json:"suspicious_note,omitempty"`
 	Timestamp      int64  `json:"timestamp"`
+	// SkipPointsAward, when true, tells the store to record the verification
+	// (history, counters, last-verified) but withhold challenge points. The
+	// server sets it from the token gate; it is never accepted from clients
+	// (json:"-") so a local prover cannot self-exempt by forging the field.
+	SkipPointsAward bool `json:"-"`
 }
 
 // Heartbeat for uptime tracking

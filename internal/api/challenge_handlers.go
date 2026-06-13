@@ -122,6 +122,15 @@ func (h *Handlers) SubmitChallenge(c *gin.Context) {
 		Timestamp:      req.Timestamp,
 	})
 
+	// Token gate: a local prover cannot earn challenge points without holding
+	// the minimum balance. Resolve the wallet (cache-first; lazy fetch on miss)
+	// and withhold the payout if it falls short. The verification is still
+	// recorded — only the points are suppressed. No-op when gating is disabled.
+	if h.holder.Enabled() {
+		h.holder.Refresh(c.Request.Context(), []string{node.WalletAddress})
+		result.SkipPointsAward = !h.holder.Allow(node.WalletAddress)
+	}
+
 	h.store.RecordVerificationResult(result)
 
 	// Record a heartbeat so local-prover nodes accrue uptime points. The

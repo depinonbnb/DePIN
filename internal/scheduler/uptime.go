@@ -42,7 +42,16 @@ func (s *Scheduler) runUptimeRewardOnce() {
 		minutesOnline = 1
 	}
 
-	var rewarded, skipped int
+	// First pass: decide which nodes are eligible on uptime grounds (active,
+	// not flagged/banned, reported synced in the window). We collect them with
+	// their wallets so the token gate can resolve balances in one batch before
+	// any points are awarded.
+	type candidate struct {
+		id     string
+		wallet string
+	}
+	candidates := make([]candidate, 0, len(nodes))
+	var skipped int
 
 	for _, node := range nodes {
 		// Skip nodes that AwardUptimePoints would skip anyway, so the log
@@ -67,15 +76,38 @@ func (s *Scheduler) runUptimeRewardOnce() {
 			continue
 		}
 
-		s.store.AwardUptimePoints(node.ID, minutesOnline)
+		candidates = append(candidates, candidate{id: node.ID, wallet: node.WalletAddress})
+	}
+
+	// Token gate: batch-resolve holder status for the eligible wallets so the
+	// per-node Allow checks below hit a warm cache (one RPC pass, not one per
+	// node). No-op when gating is disabled.
+	if s.holder.Enabled() && len(candidates) > 0 {
+		wallets := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			wallets = append(wallets, c.wallet)
+		}
+		s.holder.Refresh(s.ctx, wallets)
+	}
+
+	var rewarded, skippedNoToken int
+	for _, c := range candidates {
+		// Withhold uptime points from wallets below the minimum token balance.
+		// Allow returns true when gating is disabled, so this is a no-op then.
+		if !s.holder.Allow(c.wallet) {
+			skippedNoToken++
+			continue
+		}
+		s.store.AwardUptimePoints(c.id, minutesOnline)
 		rewarded++
 	}
 
-	if rewarded == 0 && skipped == 0 {
+	if rewarded == 0 && skipped == 0 && skippedNoToken == 0 {
 		return
 	}
 	s.logger.Info("uptime cycle done",
 		"rewarded", rewarded,
 		"skipped", skipped,
+		"skipped_no_token", skippedNoToken,
 	)
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/rpc"
 	"github.com/depinonbnb/depin/internal/store"
+	"github.com/depinonbnb/depin/internal/token"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/depinonbnb/depin/internal/verification"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -25,13 +26,19 @@ import (
 type Handlers struct {
 	store    store.Store
 	verifier *verification.Verifier
+	// holder gates point awards and supplies the holds_token display flag.
+	// Defaults to token.Noop (gating disabled) unless the router injects an
+	// on-chain checker via WithHolderChecker.
+	holder token.Checker
 }
 
 // NewHandlers constructs a Handlers value bound to the given store and verifier.
+// Token gating is disabled by default; the router opts in via WithHolderChecker.
 func NewHandlers(store store.Store, verifier *verification.Verifier) *Handlers {
 	return &Handlers{
 		store:    store,
 		verifier: verifier,
+		holder:   token.Noop{},
 	}
 }
 
@@ -170,10 +177,20 @@ func (h *Handlers) GetNode(c *gin.Context) {
 		return
 	}
 
-	// Don't expose auth token
+	// Don't expose auth token. holds_token mirrors the token gate (true for
+	// everyone when gating is disabled).
 	safeCopy := *node
 	safeCopy.AuthToken = ""
-	c.JSON(http.StatusOK, safeCopy)
+	holds, _ := h.holder.IsHolder(safeCopy.WalletAddress)
+	c.JSON(http.StatusOK, nodeWithHolder{NodeRegistration: safeCopy, HoldsToken: holds})
+}
+
+// nodeWithHolder embeds a node and adds the holds_token display flag. The
+// embedded struct is flattened by encoding/json, so the response shape is the
+// node's fields plus holds_token.
+type nodeWithHolder struct {
+	types.NodeRegistration
+	HoldsToken bool `json:"holds_token"`
 }
 
 // GET /nodes/wallet/:walletAddress
@@ -181,14 +198,16 @@ func (h *Handlers) GetNodesByWallet(c *gin.Context) {
 	wallet := strings.ToLower(c.Param("walletAddress"))
 	nodes := h.store.GetNodesByWallet(wallet)
 
-	// Don't expose auth tokens
-	safeNodes := make([]types.NodeRegistration, len(nodes))
+	// Don't expose auth tokens; annotate each node with its holds_token flag.
+	out := make([]nodeWithHolder, len(nodes))
 	for i, node := range nodes {
-		safeNodes[i] = *node
-		safeNodes[i].AuthToken = ""
+		n := *node
+		n.AuthToken = ""
+		holds, _ := h.holder.IsHolder(n.WalletAddress)
+		out[i] = nodeWithHolder{NodeRegistration: n, HoldsToken: holds}
 	}
 
-	c.JSON(http.StatusOK, safeNodes)
+	c.JSON(http.StatusOK, out)
 }
 
 // GET /wallet/:walletAddress/stats
@@ -238,6 +257,10 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 		IsSynced              bool              `json:"is_synced"`
 		LastHeartbeatAt       int64             `json:"last_heartbeat_at"`
 		RegisteredAt          int64             `json:"registered_at"`
+		// HoldsToken mirrors the token gate's verdict for this wallet. When
+		// gating is disabled it is true for everyone; when enabled it is true
+		// only for wallets resolved to hold at least the minimum balance.
+		HoldsToken bool `json:"holds_token"`
 	}
 
 	entries := make([]LeaderboardEntry, 0, len(nodes))
@@ -248,6 +271,7 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 		}
 
 		stats := h.store.GetNodeStats(node.ID)
+		holds, _ := h.holder.IsHolder(node.WalletAddress)
 		entry := LeaderboardEntry{
 			NodeID:                node.ID,
 			WalletAddress:         node.WalletAddress,
@@ -259,6 +283,7 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 			IsSynced:              node.IsSynced,
 			LastHeartbeatAt:       node.LastHeartbeatAt,
 			RegisteredAt:          node.RegisteredAt,
+			HoldsToken:            holds,
 		}
 		if stats != nil {
 			entry.ChallengePassRate = stats.ChallengePassRate

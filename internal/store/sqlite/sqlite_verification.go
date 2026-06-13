@@ -166,6 +166,11 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 
 	if result.Passed {
 		challengePoints := types.NodeType(nodeTypeStr).PointsPerChallenge()
+		// Token gate: withhold the payout for wallets below the minimum balance
+		// while still recording the pass (count + last_verified_at).
+		if result.SkipPointsAward {
+			challengePoints = 0
+		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE nodes SET
 				total_challenges_passed = total_challenges_passed + 1,

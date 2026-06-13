@@ -29,6 +29,17 @@ func (s *Scheduler) runChallengeOnce() {
 	// goroutine to it.
 	s.publishNodeBuckets(nodes)
 
+	// Token gate: warm the holder cache for this cycle's wallets so the
+	// per-node Allow check inside the dispatch goroutines hits cache instead of
+	// blocking on RPC. No-op when gating is disabled.
+	if s.holder.Enabled() {
+		wallets := make([]string, 0, len(nodes))
+		for _, n := range nodes {
+			wallets = append(wallets, n.WalletAddress)
+		}
+		s.holder.Refresh(s.ctx, wallets)
+	}
+
 	now := time.Now().UnixMilli()
 
 	var (
@@ -77,6 +88,11 @@ func (s *Scheduler) runChallengeOnce() {
 			}
 
 			result := s.verifier.VerifyExposedRPC(n)
+			// Token gate: withhold challenge points from wallets below the
+			// minimum balance. The verification is still recorded (pass/fail,
+			// last-verified); only the payout is suppressed. Allow returns true
+			// when gating is disabled, so this is a no-op then.
+			result.SkipPointsAward = !s.holder.Allow(n.WalletAddress)
 			s.store.RecordVerificationResult(result)
 			dispatched.Add(1)
 

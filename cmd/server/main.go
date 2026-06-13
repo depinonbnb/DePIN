@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/store/memory"
 	"github.com/depinonbnb/depin/internal/store/sqlite"
+	"github.com/depinonbnb/depin/internal/token"
 	"github.com/depinonbnb/depin/internal/verification"
 	"github.com/joho/godotenv"
 )
@@ -209,6 +211,72 @@ func resolveStoreBackend() (store.Store, string, error) {
 	}
 }
 
+// resolveTokenChecker builds the token-balance gate from env. Gating is
+// DISABLED unless TOKEN_CONTRACT_ADDRESS is set, in which case point awards
+// (uptime + challenge) require the operator's wallet to hold at least
+// TOKEN_MIN_BALANCE whole tokens on the configured chain. Recognised vars:
+//
+//	TOKEN_CONTRACT_ADDRESS  ERC-20 address; unset => gating disabled
+//	TOKEN_RPC_URL           balance-read RPC (default: BSC mainnet dataseed)
+//	TOKEN_MIN_BALANCE       whole tokens required (default: 1000000)
+//	TOKEN_DECIMALS          token decimals (default: 18)
+//	TOKEN_CACHE_TTL         balance cache TTL (Go duration; default: 10m)
+//	TOKEN_GATE_FAIL_OPEN    award when a balance can't be read (default: true)
+//
+// Any misconfiguration falls back to the disabled (Noop) checker with a logged
+// error rather than crashing the server or silently withholding all points.
+func resolveTokenChecker() token.Checker {
+	addr := strings.TrimSpace(os.Getenv("TOKEN_CONTRACT_ADDRESS"))
+	if addr == "" {
+		slog.Info("token gate disabled (TOKEN_CONTRACT_ADDRESS not set)")
+		return token.Noop{}
+	}
+
+	rpcURL := strings.TrimSpace(os.Getenv("TOKEN_RPC_URL"))
+	if rpcURL == "" {
+		rpcURL = "https://bsc-dataseed1.binance.org"
+	}
+
+	decimals := uint(parseIntEnv("TOKEN_DECIMALS", 18))
+
+	rawWhole := strings.TrimSpace(os.Getenv("TOKEN_MIN_BALANCE"))
+	if rawWhole == "" {
+		rawWhole = "1000000"
+	}
+	wholeTokens, ok := new(big.Int).SetString(rawWhole, 10)
+	if !ok || wholeTokens.Sign() <= 0 {
+		slog.Error("invalid TOKEN_MIN_BALANCE; token gate disabled", "value", rawWhole)
+		return token.Noop{}
+	}
+
+	failOpen := true
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TOKEN_GATE_FAIL_OPEN"))) {
+	case "0", "false", "no", "off":
+		failOpen = false
+	}
+
+	checker, err := token.New(token.Config{
+		RPCURL:       rpcURL,
+		TokenAddress: addr,
+		MinBalance:   token.ScaleTokens(wholeTokens, decimals),
+		CacheTTL:     parseDurationEnv("TOKEN_CACHE_TTL", 10*time.Minute),
+		FailOpen:     failOpen,
+	})
+	if err != nil {
+		slog.Error("token gate init failed; gating disabled", "error", err)
+		return token.Noop{}
+	}
+
+	slog.Info("token gate enabled",
+		"token", addr,
+		"rpc", rpcURL,
+		"min_tokens", wholeTokens.String(),
+		"decimals", decimals,
+		"fail_open", failOpen,
+	)
+	return checker
+}
+
 func main() {
 	// Load .env file if it exists
 	_ = godotenv.Load()
@@ -277,6 +345,14 @@ func main() {
 	// the wiring is the same in tests; SCHEDULER_ENABLED=false skips Start().
 	schedCfg := resolveSchedulerConfig()
 	sched := scheduler.New(nodeStore, verifier, schedCfg)
+
+	// Token gate: the same checker instance is shared by the scheduler (which
+	// enforces the gate on uptime/challenge awards and keeps the balance cache
+	// warm) and the API handlers (which read it for holds_token and to gate
+	// local-prover submissions). Must be installed before Start.
+	holder := resolveTokenChecker()
+	sched.SetHolderChecker(holder)
+
 	if schedCfg.Disabled {
 		slog.Info("scheduler disabled via SCHEDULER_ENABLED env")
 	} else {
@@ -294,7 +370,7 @@ func main() {
 		slog.Info("snapshot cron disabled (SNAPSHOT_INTERVAL=0)")
 	}
 
-	router := api.SetupRouter(nodeStore, verifier, adminAPIKey)
+	router := api.SetupRouter(nodeStore, verifier, adminAPIKey, api.WithHolderChecker(holder))
 
 	server := &http.Server{
 		Addr:              ":" + port,

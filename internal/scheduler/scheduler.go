@@ -30,6 +30,7 @@ import (
 
 	"github.com/depinonbnb/depin/internal/metrics"
 	"github.com/depinonbnb/depin/internal/store"
+	"github.com/depinonbnb/depin/internal/token"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/depinonbnb/depin/internal/verification"
 )
@@ -78,6 +79,11 @@ type Scheduler struct {
 	wg       sync.WaitGroup
 	logger   *slog.Logger
 
+	// holder gates point awards on the operator's on-chain token balance.
+	// Defaults to token.Noop (gating disabled); SetHolderChecker swaps in the
+	// configured on-chain checker at startup.
+	holder token.Checker
+
 	mu      sync.Mutex // guards started/closed
 	started bool
 	closed  bool
@@ -98,7 +104,19 @@ func New(s store.Store, v *verification.Verifier, cfg Config) *Scheduler {
 		ctx:      ctx,
 		cancel:   cancel,
 		logger:   slog.Default(),
+		holder:   token.Noop{},
 	}
+}
+
+// SetHolderChecker installs the token-gate checker used to withhold points from
+// wallets below the minimum balance. Call before Start. Passing nil resets to
+// the disabled (Noop) checker. Not safe to call concurrently with a running
+// scheduler.
+func (s *Scheduler) SetHolderChecker(c token.Checker) {
+	if c == nil {
+		c = token.Noop{}
+	}
+	s.holder = c
 }
 
 // applyDefaults fills any zero field with the corresponding default.
