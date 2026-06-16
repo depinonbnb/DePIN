@@ -211,12 +211,16 @@ func resolveStoreBackend() (store.Store, string, error) {
 	}
 }
 
-// resolveTokenChecker builds the token-balance gate from env. Gating is
-// DISABLED unless TOKEN_CONTRACT_ADDRESS is set, in which case point awards
+// defaultTokenContract is the live DEPIN token on BSC mainnet. Point awards
 // (uptime + challenge) require the operator's wallet to hold at least
-// TOKEN_MIN_BALANCE whole tokens on the configured chain. Recognised vars:
+// TOKEN_MIN_BALANCE of it. Override with TOKEN_CONTRACT_ADDRESS, or disable the
+// gate entirely with TOKEN_CONTRACT_ADDRESS=off.
+const defaultTokenContract = "0x426326e876ad01fd99db898604c16c0628da7777"
+
+// resolveTokenChecker builds the token-balance gate from env. By default it
+// gates on the DEPIN token (defaultTokenContract) on BSC mainnet. Recognised vars:
 //
-//	TOKEN_CONTRACT_ADDRESS  ERC-20 address; unset => gating disabled
+//	TOKEN_CONTRACT_ADDRESS  ERC-20 address (default: DEPIN); "off" disables the gate
 //	TOKEN_RPC_URL           balance-read RPC (default: BSC mainnet dataseed)
 //	TOKEN_MIN_BALANCE       whole tokens required (default: 1000000)
 //	TOKEN_DECIMALS          token decimals (default: 18)
@@ -228,7 +232,10 @@ func resolveStoreBackend() (store.Store, string, error) {
 func resolveTokenChecker() token.Checker {
 	addr := strings.TrimSpace(os.Getenv("TOKEN_CONTRACT_ADDRESS"))
 	if addr == "" {
-		slog.Info("token gate disabled (TOKEN_CONTRACT_ADDRESS not set)")
+		addr = defaultTokenContract
+	}
+	if strings.EqualFold(addr, "off") || strings.EqualFold(addr, "disabled") {
+		slog.Info("token gate disabled (TOKEN_CONTRACT_ADDRESS=off)")
 		return token.Noop{}
 	}
 
