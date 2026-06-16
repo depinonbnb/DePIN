@@ -203,6 +203,11 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 			slog.Default().Error("sqlite: escalate verification", "node_id", result.NodeID, "error", err)
 			return
 		}
+	} else if result.Passed {
+		if err := applyCleanRecoveryTx(ctx, tx, result.NodeID); err != nil {
+			slog.Default().Error("sqlite: recover verification", "node_id", result.NodeID, "error", err)
+			return
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -331,6 +336,52 @@ func applySuspiciousEscalationTx(ctx context.Context, tx *sql.Tx, nodeID, reason
 	}
 
 	return nil
+}
+
+// applyCleanRecoveryTx decays a node's warning_count by one on a clean, fast
+// pass and de-escalates cheat_status per the same thresholds the escalation
+// path uses (flagged >=5, warning >=2, else clean). Banned nodes are left
+// untouched. This makes flagging recoverable: a node that's mostly fast sheds
+// warnings instead of permanently flagging on occasional slow spikes.
+func applyCleanRecoveryTx(ctx context.Context, tx *sql.Tx, nodeID string) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE nodes
+		SET warning_count = CASE WHEN warning_count > 0 THEN warning_count - 1 ELSE 0 END
+		WHERE id = ? AND cheat_status != ?`,
+		nodeID, string(types.StatusBanned),
+	); err != nil {
+		return fmt.Errorf("decay warning: %w", err)
+	}
+
+	var warningCount int
+	var status string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT warning_count, cheat_status FROM nodes WHERE id = ?`,
+		nodeID,
+	).Scan(&warningCount, &status); err != nil {
+		return fmt.Errorf("read warning_count: %w", err)
+	}
+	if status == string(types.StatusBanned) {
+		return nil
+	}
+
+	switch {
+	case warningCount >= 5:
+		_, err := tx.ExecContext(ctx,
+			`UPDATE nodes SET cheat_status = ? WHERE id = ?`,
+			string(types.StatusFlagged), nodeID)
+		return err
+	case warningCount >= 2:
+		_, err := tx.ExecContext(ctx,
+			`UPDATE nodes SET cheat_status = ? WHERE id = ?`,
+			string(types.StatusWarning), nodeID)
+		return err
+	default:
+		_, err := tx.ExecContext(ctx,
+			`UPDATE nodes SET cheat_status = ?, cheat_reason = '' WHERE id = ?`,
+			string(types.StatusClean), nodeID)
+		return err
+	}
 }
 
 // GetVerificationHistory returns up to `limit` most-recent verification

@@ -192,6 +192,21 @@ func (s *MemoryStore) RecordVerificationResult(result *types.VerificationResult)
 				node.CheatStatus = types.StatusWarning
 				node.CheatReason = event
 			}
+		} else if result.Passed && node.CheatStatus != types.StatusBanned {
+			// Clean, fast pass: recover one step so occasional slow spikes don't
+			// permanently flag an otherwise-healthy node. Banned stays banned.
+			if node.WarningCount > 0 {
+				node.WarningCount--
+			}
+			switch {
+			case node.WarningCount >= 5:
+				node.CheatStatus = types.StatusFlagged
+			case node.WarningCount >= 2:
+				node.CheatStatus = types.StatusWarning
+			default:
+				node.CheatStatus = types.StatusClean
+				node.CheatReason = ""
+			}
 		}
 	}
 }
