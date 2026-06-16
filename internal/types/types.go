@@ -219,7 +219,7 @@ type WalletStats struct {
 // Latency limits for anti-cheat
 const (
 	LatencyLocalNode     uint64 = 100  // Local nodes respond in under 100ms
-	LatencySuspiciousMin uint64 = 150  // Anything over this is suspicious
+	LatencySuspiciousMin uint64 = 500  // Over this looks like relaying, not a local node. Set above the public-RPC floor (300ms) so real local nodes on normal hardware aren't false-flagged.
 	LatencyPublicRPC     uint64 = 300  // Public RPCs typically take 300ms+
 	LatencyMaxAllowed    uint64 = 5000 // Timeout after this
 )

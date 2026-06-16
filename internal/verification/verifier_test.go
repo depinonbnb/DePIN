@@ -171,7 +171,7 @@ func TestVerifyResponseSuspiciousLatency(t *testing.T) {
 		ChallengeID:    "test-challenge",
 		NodeID:         "test-node",
 		Answer:         "correct-answer",
-		ResponseTimeMs: 200, // Over 150ms suspicious threshold but under 5000ms
+		ResponseTimeMs: 600, // Over 500ms suspicious threshold but under 5000ms
 		Timestamp:      time.Now().UnixMilli(),
 	}
 

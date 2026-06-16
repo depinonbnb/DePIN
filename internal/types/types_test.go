@@ -111,8 +111,8 @@ func TestLatencyConstants(t *testing.T) {
 	if LatencyLocalNode != 100 {
 		t.Errorf("LatencyLocalNode should be 100, got %d", LatencyLocalNode)
 	}
-	if LatencySuspiciousMin != 150 {
-		t.Errorf("LatencySuspiciousMin should be 150, got %d", LatencySuspiciousMin)
+	if LatencySuspiciousMin != 500 {
+		t.Errorf("LatencySuspiciousMin should be 500, got %d", LatencySuspiciousMin)
 	}
 	if LatencyPublicRPC != 300 {
 		t.Errorf("LatencyPublicRPC should be 300, got %d", LatencyPublicRPC)
@@ -121,14 +121,17 @@ func TestLatencyConstants(t *testing.T) {
 		t.Errorf("LatencyMaxAllowed should be 5000, got %d", LatencyMaxAllowed)
 	}
 
-	// Ensure thresholds are in correct order
-	if LatencyLocalNode >= LatencySuspiciousMin {
-		t.Error("LatencyLocalNode should be less than LatencySuspiciousMin")
+	// Ensure thresholds are in the correct order. The suspicious-latency flag
+	// sits ABOVE the public-RPC round-trip estimate: we only treat a response as
+	// "probably relaying" when it's slower than even a public RPC would be, so a
+	// real local node on normal hardware isn't false-flagged.
+	if LatencyLocalNode >= LatencyPublicRPC {
+		t.Error("LatencyLocalNode should be less than LatencyPublicRPC")
 	}
-	if LatencySuspiciousMin >= LatencyPublicRPC {
-		t.Error("LatencySuspiciousMin should be less than LatencyPublicRPC")
+	if LatencyPublicRPC >= LatencySuspiciousMin {
+		t.Error("LatencyPublicRPC should be less than LatencySuspiciousMin")
 	}
-	if LatencyPublicRPC >= LatencyMaxAllowed {
-		t.Error("LatencyPublicRPC should be less than LatencyMaxAllowed")
+	if LatencySuspiciousMin >= LatencyMaxAllowed {
+		t.Error("LatencySuspiciousMin should be less than LatencyMaxAllowed")
 	}
 }
