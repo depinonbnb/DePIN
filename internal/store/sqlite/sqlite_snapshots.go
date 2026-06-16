@@ -198,12 +198,12 @@ func (s *SQLiteStore) GetWalletProof(cycleID string, wallet string) (*types.Snap
 	)
 
 	var (
-		snap       types.Snapshot
-		amountHex  string
-		proofJSON  string
-		nodeCount  int64
-		published  int64
-		ipfsCID    sql.NullString
+		snap      types.Snapshot
+		amountHex string
+		proofJSON string
+		nodeCount int64
+		published int64
+		ipfsCID   sql.NullString
 	)
 	if err := row.Scan(
 		&snap.CycleID, &snap.Root, &snap.TotalAmount, &nodeCount, &published, &ipfsCID,
@@ -362,4 +362,3 @@ func hexNibble(c byte) (byte, error) {
 	}
 	return 0, fmt.Errorf("invalid hex char %q", c)
 }
-

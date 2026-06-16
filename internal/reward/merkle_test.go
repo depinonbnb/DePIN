@@ -261,7 +261,7 @@ func TestBuildTree_VerifyAll(t *testing.T) {
 				var a common.Address
 				a[0] = byte(i * 37)
 				a[19] = byte(i + 1)
-				leaves[i] = Leaf{Wallet: a, Amount: big.NewInt(int64(i + 1) * 1000)}
+				leaves[i] = Leaf{Wallet: a, Amount: big.NewInt(int64(i+1) * 1000)}
 			}
 			root, proofs, err := BuildTree(leaves)
 			if err != nil {

@@ -38,7 +38,7 @@ func newMockRPCServer(t *testing.T) *httptest.Server {
 				"hash": "0x1111", "number": "0x100", "timestamp": "0x0",
 				"parentHash": "0x2222", "stateRoot": "0x3333",
 				"transactionsRoot": "0x4444", "receiptsRoot": "0x5555",
-				"miner": "0x0000000000000000000000000000000000000000",
+				"miner":   "0x0000000000000000000000000000000000000000",
 				"gasUsed": "0x0", "gasLimit": "0x0",
 			}
 		case "eth_getBalance":
@@ -184,9 +184,9 @@ func TestSubmitChallenge_InvalidSignature(t *testing.T) {
 		NodeID:      node.ID,
 		Answer:      "ans",
 		// 65-byte garbage sig — valid length but wrong key
-		Signature:   "0x" + "aa" + string(make([]byte, 128)),
-		Timestamp:   1_700_000_000_000,
-		Nonce:       "n1",
+		Signature: "0x" + "aa" + string(make([]byte, 128)),
+		Timestamp: 1_700_000_000_000,
+		Nonce:     "n1",
 	})
 	req, _ := http.NewRequest("POST", "/api/challenges/submit", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")

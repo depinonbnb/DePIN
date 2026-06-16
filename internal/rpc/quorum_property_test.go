@@ -69,7 +69,7 @@ func TestQuorumMajority_Property(t *testing.T) {
 				} else if !strings.EqualFold(resp.Data, winner) {
 					t.Errorf("n=%d k=%d: expected winner %q, got %q", n, k, winner, resp.Data)
 				}
-			case (n-k) >= majority:
+			case (n - k) >= majority:
 				if !resp.Success {
 					t.Errorf("n=%d k=%d: expected majority loser, got error=%q", n, k, resp.Error)
 				} else if !strings.EqualFold(resp.Data, loser) {

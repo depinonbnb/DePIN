@@ -216,13 +216,13 @@ func retryAfterSeconds(r rate.Limit) int {
 // Globals are deliberately permissive (60 rpm with a generous burst); the
 // tighter caps live on the sensitive routes.
 var (
-	GlobalIPRPS    = rate.Limit(1.0)         // 60 / minute
-	GlobalIPBurst  = 100
-	StrictIPRPS    = rate.Every(6 * time.Second) // 10 / minute
-	StrictIPBurst  = 5
+	GlobalIPRPS   = rate.Limit(1.0) // 60 / minute
+	GlobalIPBurst = 100
+	StrictIPRPS   = rate.Every(6 * time.Second) // 10 / minute
+	StrictIPBurst = 5
 
-	WalletRegisterRPS    = rate.Every(12 * time.Second) // 5 / minute
-	WalletRegisterBurst  = 2
-	WalletSubmitRPS      = rate.Every(2 * time.Second) // 30 / minute
-	WalletSubmitBurst    = 5
+	WalletRegisterRPS   = rate.Every(12 * time.Second) // 5 / minute
+	WalletRegisterBurst = 2
+	WalletSubmitRPS     = rate.Every(2 * time.Second) // 30 / minute
+	WalletSubmitBurst   = 5
 )

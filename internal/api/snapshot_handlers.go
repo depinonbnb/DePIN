@@ -54,11 +54,11 @@ func (h *Handlers) PublishSnapshot(c *gin.Context) {
 			// publish a tree. Surface a 200 with a clear message rather than
 			// a 4xx so the snapshot job can log + skip.
 			c.JSON(http.StatusOK, gin.H{
-				"success":     true,
-				"published":   false,
-				"cycle_id":    cycleID,
-				"node_count":  0,
-				"message":     "cycle has no earners; nothing published",
+				"success":    true,
+				"published":  false,
+				"cycle_id":   cycleID,
+				"node_count": 0,
+				"message":    "cycle has no earners; nothing published",
 			})
 			return
 		}

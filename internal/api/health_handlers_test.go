@@ -184,4 +184,3 @@ func TestMetricsEndpointMounted(t *testing.T) {
 		t.Errorf("metrics body missing depin_ prefix; got %d bytes", w.Body.Len())
 	}
 }
-

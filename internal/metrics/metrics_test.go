@@ -91,13 +91,13 @@ func TestBucketSuspiciousReason(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"latency too high":              "latency",
-		"answer mismatch with quorum":   "answer_mismatch",
-		"missing node, untracked id":    "missing_node",
-		"timeout exceeded":              "latency",
-		"unknown thing":                 "other",
-		"":                              "other",
-		"answer differs from majority":  "answer_mismatch",
+		"latency too high":             "latency",
+		"answer mismatch with quorum":  "answer_mismatch",
+		"missing node, untracked id":   "missing_node",
+		"timeout exceeded":             "latency",
+		"unknown thing":                "other",
+		"":                             "other",
+		"answer differs from majority": "answer_mismatch",
 	}
 	for in, want := range cases {
 		if got := BucketSuspiciousReason(in); got != want {
