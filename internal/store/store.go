@@ -82,6 +82,10 @@ type Store interface {
 	// part of normal operation. Returns false if the node was not found.
 	SeedNode(nodeID string, totalPoints, verifications, uptimeMinutes uint64, synced bool) bool
 
+	// DeleteNode removes a node and its dependent rows. Admin/test seam.
+	// Returns false if the node was not found.
+	DeleteNode(nodeID string) bool
+
 	// ConsumeNonce records (wallet, nonce) with a TTL and returns true if the
 	// pair is fresh (just recorded). It returns false if the same (wallet,
 	// nonce) is still present and unexpired — that is the replay-detection

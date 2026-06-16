@@ -182,3 +182,38 @@ func (s *SQLiteStore) SeedNode(nodeID string, totalPoints, verifications, uptime
 	n, _ := res.RowsAffected()
 	return n > 0
 }
+
+// DeleteNode removes a node and its dependent rows. verification_results,
+// heartbeats, pending_challenges and suspicious_events cascade on delete;
+// admin_actions does not (audit trail), so we clear it explicitly first to
+// avoid a foreign-key failure. Returns false if the node was not found.
+func (s *SQLiteStore) DeleteNode(nodeID string) bool {
+	tx, err := s.db.BeginTx(s.ctx, nil)
+	if err != nil {
+		slog.Default().Error("sqlite: DeleteNode begin", "node_id", nodeID, "error", err)
+		return false
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.ExecContext(s.ctx, `DELETE FROM admin_actions WHERE node_id = ?`, nodeID); err != nil {
+		slog.Default().Error("sqlite: DeleteNode admin_actions", "node_id", nodeID, "error", err)
+		return false
+	}
+	res, err := tx.ExecContext(s.ctx, `DELETE FROM nodes WHERE id = ?`, nodeID)
+	if err != nil {
+		slog.Default().Error("sqlite: DeleteNode nodes", "node_id", nodeID, "error", err)
+		return false
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		slog.Default().Error("sqlite: DeleteNode commit", "node_id", nodeID, "error", err)
+		return false
+	}
+	committed = true
+	return n > 0
+}

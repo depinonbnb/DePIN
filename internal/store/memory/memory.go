@@ -388,6 +388,37 @@ func (s *MemoryStore) SeedNode(nodeID string, totalPoints, verifications, uptime
 	return true
 }
 
+// DeleteNode removes a node and its dependent in-memory data. Returns false if
+// the node was not found.
+func (s *MemoryStore) DeleteNode(nodeID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return false
+	}
+	wallet := node.WalletAddress
+	delete(s.nodes, nodeID)
+	delete(s.verificationHistory, nodeID)
+	delete(s.heartbeats, nodeID)
+
+	if ids := s.nodesByWallet[wallet]; len(ids) > 0 {
+		filtered := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if id != nodeID {
+				filtered = append(filtered, id)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(s.nodesByWallet, wallet)
+		} else {
+			s.nodesByWallet[wallet] = filtered
+		}
+	}
+	return true
+}
+
 // AddSuspiciousEvent appends a structured event and applies escalation rules.
 func (s *MemoryStore) AddSuspiciousEvent(nodeID string, reason string) {
 	// Counter is incremented unconditionally (even if the node lookup fails

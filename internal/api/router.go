@@ -181,6 +181,7 @@ func SetupRouter(store store.Store, verifier *verification.Verifier, adminAPIKey
 			admin.GET("/flagged", handlers.GetFlaggedNodes)
 			admin.POST("/review/:nodeId", handlers.ReviewNode)
 			admin.POST("/test/create-node", handlers.TestCreateNode)
+			admin.DELETE("/nodes/:nodeId", handlers.DeleteNode)
 
 			// Snapshot publish (ADR-0008). Manual for Phase 4; the
 			// SNAPSHOT_INTERVAL env var is reserved for the Phase 5

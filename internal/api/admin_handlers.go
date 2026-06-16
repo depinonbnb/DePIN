@@ -97,14 +97,17 @@ func (h *Handlers) TestCreateNode(c *gin.Context) {
 		return
 	}
 
-	// Register the node without signature verification
-	node := h.store.RegisterNode(
-		strings.ToLower(req.WalletAddress),
-		req.NodeType,
-		req.VerificationMethod,
-		req.RPCEndpoint,
-		"",
-	)
+	wallet := strings.ToLower(req.WalletAddress)
+
+	// Idempotent per wallet: if a node already exists for this wallet, update it
+	// instead of creating a duplicate (re-running this endpoint shouldn't pile
+	// up demo nodes). Otherwise register a fresh one without signature checks.
+	var node *types.NodeRegistration
+	if existing := h.store.GetNodesByWallet(wallet); len(existing) > 0 {
+		node = existing[0]
+	} else {
+		node = h.store.RegisterNode(wallet, req.NodeType, req.VerificationMethod, req.RPCEndpoint, "")
+	}
 
 	// Optionally seed demo state (points / synced). Cheat status stays Clean
 	// from registration.
@@ -122,6 +125,17 @@ func (h *Handlers) TestCreateNode(c *gin.Context) {
 		"is_synced":    node.IsSynced,
 		"message":      "test node created successfully",
 	})
+}
+
+// DELETE /admin/nodes/:nodeId - Remove a node and its dependent data
+// (admin/test cleanup, e.g. removing duplicate seed nodes).
+func (h *Handlers) DeleteNode(c *gin.Context) {
+	nodeID := c.Param("nodeId")
+	if !h.store.DeleteNode(nodeID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "deleted": nodeID})
 }
 
 // abs returns the absolute value of x. Used for timestamp drift comparison in
