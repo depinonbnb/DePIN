@@ -30,6 +30,7 @@ type TestCreateNodeRequest struct {
 	// Optional seed state for demo/test nodes.
 	TotalPoints   uint64 `json:"total_points"`
 	Verifications uint64 `json:"verifications"`
+	UptimeMinutes uint64 `json:"uptime_minutes"`
 	Synced        bool   `json:"synced"`
 }
 
@@ -107,8 +108,8 @@ func (h *Handlers) TestCreateNode(c *gin.Context) {
 
 	// Optionally seed demo state (points / synced). Cheat status stays Clean
 	// from registration.
-	if req.TotalPoints > 0 || req.Verifications > 0 || req.Synced {
-		h.store.SeedNode(node.ID, req.TotalPoints, req.Verifications, req.Synced)
+	if req.TotalPoints > 0 || req.Verifications > 0 || req.UptimeMinutes > 0 || req.Synced {
+		h.store.SeedNode(node.ID, req.TotalPoints, req.Verifications, req.UptimeMinutes, req.Synced)
 		node = h.store.GetNode(node.ID)
 	}
 
