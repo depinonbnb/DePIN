@@ -373,7 +373,7 @@ func (s *MemoryStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 
 // SeedNode sets a node's total points and synced flag directly (admin/test
 // seam for demo nodes). Returns false if the node was not found.
-func (s *MemoryStore) SeedNode(nodeID string, totalPoints uint64, synced bool) bool {
+func (s *MemoryStore) SeedNode(nodeID string, totalPoints, verifications uint64, synced bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -382,6 +382,7 @@ func (s *MemoryStore) SeedNode(nodeID string, totalPoints uint64, synced bool) b
 		return false
 	}
 	node.TotalPoints = totalPoints
+	node.TotalChallengesPassed = verifications
 	node.IsSynced = synced
 	return true
 }

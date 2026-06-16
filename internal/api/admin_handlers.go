@@ -28,8 +28,9 @@ type TestCreateNodeRequest struct {
 	VerificationMethod types.VerificationMethod `json:"verification_method" binding:"required"`
 	RPCEndpoint        string                   `json:"rpc_endpoint"`
 	// Optional seed state for demo/test nodes.
-	TotalPoints uint64 `json:"total_points"`
-	Synced      bool   `json:"synced"`
+	TotalPoints   uint64 `json:"total_points"`
+	Verifications uint64 `json:"verifications"`
+	Synced        bool   `json:"synced"`
 }
 
 // GET /admin/flagged - Get all nodes that need review.
@@ -106,8 +107,8 @@ func (h *Handlers) TestCreateNode(c *gin.Context) {
 
 	// Optionally seed demo state (points / synced). Cheat status stays Clean
 	// from registration.
-	if req.TotalPoints > 0 || req.Synced {
-		h.store.SeedNode(node.ID, req.TotalPoints, req.Synced)
+	if req.TotalPoints > 0 || req.Verifications > 0 || req.Synced {
+		h.store.SeedNode(node.ID, req.TotalPoints, req.Verifications, req.Synced)
 		node = h.store.GetNode(node.ID)
 	}
 
