@@ -136,8 +136,8 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 	// counter updates if the node is gone" semantics. Without this guard the
 	// FK constraint on verification_results would surface as an error rather
 	// than a silent no-op.
-	var nodeTypeStr string
-	if err := tx.QueryRowContext(ctx, `SELECT node_type FROM nodes WHERE id = ?`, result.NodeID).Scan(&nodeTypeStr); err != nil {
+	var nodeTypeStr, cheatStatusStr string
+	if err := tx.QueryRowContext(ctx, `SELECT node_type, cheat_status FROM nodes WHERE id = ?`, result.NodeID).Scan(&nodeTypeStr, &cheatStatusStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// No node — drop the row to mirror the in-memory store's
 			// "if ok" guard (which silently skipped both history append and
@@ -168,8 +168,9 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 	if result.Passed {
 		challengePoints := types.NodeType(nodeTypeStr).PointsPerChallenge()
 		// Token gate: withhold the payout for wallets below the minimum balance
-		// while still recording the pass (count + last_verified_at).
-		if result.SkipPointsAward {
+		// while still recording the pass (count + last_verified_at). Banned
+		// nodes earn nothing.
+		if result.SkipPointsAward || cheatStatusStr == string(types.StatusBanned) {
 			challengePoints = 0
 		}
 		// Rate-cap points per node per window (no-op unless enabled at startup).

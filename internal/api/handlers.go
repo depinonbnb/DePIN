@@ -254,6 +254,7 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 		TotalChallengesPassed uint64            `json:"total_challenges_passed"`
 		ChallengePassRate     float64           `json:"challenge_pass_rate"`
 		CheatStatus           types.CheatStatus `json:"cheat_status"`
+		CheatReason           string            `json:"cheat_reason,omitempty"`
 		IsSynced              bool              `json:"is_synced"`
 		LastHeartbeatAt       int64             `json:"last_heartbeat_at"`
 		RegisteredAt          int64             `json:"registered_at"`
@@ -265,11 +266,6 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 
 	entries := make([]LeaderboardEntry, 0, len(nodes))
 	for _, node := range nodes {
-		// Don't show banned nodes on leaderboard
-		if node.CheatStatus == types.StatusBanned {
-			continue
-		}
-
 		stats := h.store.GetNodeStats(node.ID)
 		holds, _ := h.holder.IsHolder(node.WalletAddress)
 		entry := LeaderboardEntry{
@@ -280,6 +276,7 @@ func (h *Handlers) GetLeaderboard(c *gin.Context) {
 			TotalUptimeHours:      float64(node.TotalUptimeMinutes) / 60.0,
 			TotalChallengesPassed: node.TotalChallengesPassed,
 			CheatStatus:           node.CheatStatus,
+			CheatReason:           node.CheatReason,
 			IsSynced:              node.IsSynced,
 			LastHeartbeatAt:       node.LastHeartbeatAt,
 			RegisteredAt:          node.RegisteredAt,

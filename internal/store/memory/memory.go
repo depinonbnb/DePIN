@@ -160,7 +160,7 @@ func (s *MemoryStore) RecordVerificationResult(result *types.VerificationResult)
 			// local-prover submissions. The token gate may withhold the points
 			// (SkipPointsAward) for wallets below the minimum balance — the pass
 			// still counts, only the payout is suppressed.
-			if !result.SkipPointsAward {
+			if !result.SkipPointsAward && node.CheatStatus != types.StatusBanned {
 				node.TotalPoints += pointscap.Allow(node.ID, node.NodeType.PointsPerChallenge())
 			}
 		} else {
