@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/depinonbnb/depin/internal/pointscap"
 	"github.com/depinonbnb/depin/internal/types"
 )
 
@@ -148,6 +149,8 @@ func (s *SQLiteStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 	if pointsPerInterval < 1 {
 		pointsPerInterval = 1
 	}
+	// Rate-cap points per node per window (no-op unless enabled at startup).
+	pointsPerInterval = pointscap.Allow(nodeID, pointsPerInterval)
 
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE nodes

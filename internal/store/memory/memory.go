@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/depinonbnb/depin/internal/metrics"
+	"github.com/depinonbnb/depin/internal/pointscap"
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/types"
 	"github.com/google/uuid"
@@ -160,7 +161,7 @@ func (s *MemoryStore) RecordVerificationResult(result *types.VerificationResult)
 			// (SkipPointsAward) for wallets below the minimum balance — the pass
 			// still counts, only the payout is suppressed.
 			if !result.SkipPointsAward {
-				node.TotalPoints += node.NodeType.PointsPerChallenge()
+				node.TotalPoints += pointscap.Allow(node.ID, node.NodeType.PointsPerChallenge())
 			}
 		} else {
 			node.TotalChallengesFailed++
@@ -352,7 +353,7 @@ func (s *MemoryStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 	if pointsPerInterval < 1 {
 		pointsPerInterval = 1
 	}
-	node.TotalPoints += pointsPerInterval
+	node.TotalPoints += pointscap.Allow(node.ID, pointsPerInterval)
 }
 
 // AddSuspiciousEvent appends a structured event and applies escalation rules.

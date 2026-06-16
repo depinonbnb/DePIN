@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/depinonbnb/depin/internal/metrics"
+	"github.com/depinonbnb/depin/internal/pointscap"
 	"github.com/depinonbnb/depin/internal/types"
 )
 
@@ -171,6 +172,8 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 		if result.SkipPointsAward {
 			challengePoints = 0
 		}
+		// Rate-cap points per node per window (no-op unless enabled at startup).
+		challengePoints = pointscap.Allow(result.NodeID, challengePoints)
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE nodes SET
 				total_challenges_passed = total_challenges_passed + 1,

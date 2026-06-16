@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/depinonbnb/depin/internal/api"
+	"github.com/depinonbnb/depin/internal/pointscap"
 	"github.com/depinonbnb/depin/internal/scheduler"
 	"github.com/depinonbnb/depin/internal/store"
 	"github.com/depinonbnb/depin/internal/store/memory"
@@ -289,6 +290,10 @@ func main() {
 	_ = godotenv.Load()
 
 	configureLogger()
+
+	// Cap points per node per rolling window so a fast-looping prover can't farm
+	// faster than intended (anti-abuse). 10 points / 10 minutes.
+	pointscap.SetLimits(10, 10*time.Minute)
 
 	port := os.Getenv("PORT")
 	if port == "" {
