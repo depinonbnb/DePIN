@@ -77,6 +77,11 @@ type Store interface {
 	// SuspiciousEvents; banned status sets IsActive=false.
 	SetNodeCheatStatus(nodeID string, status types.CheatStatus, reason string) bool
 
+	// SeedNode sets a node's total points and synced flag directly. Admin/test
+	// seam for demo nodes; not part of normal operation. Returns false if the
+	// node was not found.
+	SeedNode(nodeID string, totalPoints uint64, synced bool) bool
+
 	// ConsumeNonce records (wallet, nonce) with a TTL and returns true if the
 	// pair is fresh (just recorded). It returns false if the same (wallet,
 	// nonce) is still present and unexpired — that is the replay-detection

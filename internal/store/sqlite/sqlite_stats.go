@@ -163,3 +163,22 @@ func (s *SQLiteStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 		slog.Default().Error("sqlite: AwardUptimePoints update", "node_id", nodeID, "error", err)
 	}
 }
+
+// SeedNode sets a node's total points and synced flag directly (admin/test seam
+// for demo nodes). Returns false if the node was not found.
+func (s *SQLiteStore) SeedNode(nodeID string, totalPoints uint64, synced bool) bool {
+	syncedInt := 0
+	if synced {
+		syncedInt = 1
+	}
+	res, err := s.db.ExecContext(s.ctx, `
+		UPDATE nodes SET total_points = ?, is_synced = ? WHERE id = ?`,
+		totalPoints, syncedInt, nodeID,
+	)
+	if err != nil {
+		slog.Default().Error("sqlite: SeedNode", "node_id", nodeID, "error", err)
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}

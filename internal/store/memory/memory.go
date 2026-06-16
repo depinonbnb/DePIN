@@ -371,6 +371,21 @@ func (s *MemoryStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 	node.TotalPoints += pointscap.Allow(node.ID, pointsPerInterval)
 }
 
+// SeedNode sets a node's total points and synced flag directly (admin/test
+// seam for demo nodes). Returns false if the node was not found.
+func (s *MemoryStore) SeedNode(nodeID string, totalPoints uint64, synced bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return false
+	}
+	node.TotalPoints = totalPoints
+	node.IsSynced = synced
+	return true
+}
+
 // AddSuspiciousEvent appends a structured event and applies escalation rules.
 func (s *MemoryStore) AddSuspiciousEvent(nodeID string, reason string) {
 	// Counter is incremented unconditionally (even if the node lookup fails
