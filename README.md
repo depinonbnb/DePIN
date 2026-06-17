@@ -10,6 +10,16 @@ The BNB token charges transaction fees. These fees go into a vault which is used
 
 Users download the official BNB node from [bnb-chain/bsc](https://github.com/bnb-chain/bsc), sync it, and earn rewards for keeping it online.
 
+## Token
+
+**DEPIN** on BNB Smart Chain (mainnet). Operators must hold **1,000,000 DEPIN** in their wallet to accrue points — the balance is re-checked on-chain every reward cycle.
+
+- **Contract:** `0x426326e876ad01fd99db898604c16c0628da7777`
+- **Decimals:** 18
+- **Explorer:** https://bscscan.com/token/0x426326e876ad01fd99db898604c16c0628da7777
+
+Set `TOKEN_CONTRACT_ADDRESS` to override (defaults to the address above); `TOKEN_CONTRACT_ADDRESS=off` disables the gate.
+
 ## Supported Nodes
 
 | Node Type | Chain | Reward Tier |
