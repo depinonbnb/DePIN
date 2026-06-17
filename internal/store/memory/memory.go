@@ -160,8 +160,8 @@ func (s *MemoryStore) RecordVerificationResult(result *types.VerificationResult)
 			// local-prover submissions. The token gate may withhold the points
 			// (SkipPointsAward) for wallets below the minimum balance — the pass
 			// still counts, only the payout is suppressed.
-			if !result.SkipPointsAward && node.CheatStatus != types.StatusBanned {
-				node.TotalPoints += pointscap.Allow(node.ID, node.NodeType.PointsPerChallenge())
+			if !result.SkipPointsAward && !types.EarningBlocked(node.CheatStatus) {
+				node.TotalPoints += pointscap.Allow(node.ID, node.NodeType.PointsPerChallenge(), node.NodeType.PointsCapPerWindow())
 			}
 		} else {
 			node.TotalChallengesFailed++
@@ -368,7 +368,7 @@ func (s *MemoryStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 	if pointsPerInterval < 1 {
 		pointsPerInterval = 1
 	}
-	node.TotalPoints += pointscap.Allow(node.ID, pointsPerInterval)
+	node.TotalPoints += pointscap.Allow(node.ID, pointsPerInterval, node.NodeType.PointsCapPerWindow())
 }
 
 // SeedNode sets a node's total points and synced flag directly (admin/test
@@ -386,6 +386,31 @@ func (s *MemoryStore) SeedNode(nodeID string, totalPoints, verifications, uptime
 	node.TotalUptimeMinutes = uptimeMinutes
 	node.IsSynced = synced
 	return true
+}
+
+// SetNodeIP records the network address a node registered from.
+func (s *MemoryStore) SetNodeIP(nodeID, ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if node, ok := s.nodes[nodeID]; ok {
+		node.RegisteredIP = ip
+	}
+}
+
+// HasActiveNodeFromIP reports whether an active, non-banned node already exists
+// from the given IP.
+func (s *MemoryStore) HasActiveNodeFromIP(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, node := range s.nodes {
+		if node.RegisteredIP == ip && node.IsActive && node.CheatStatus != types.StatusBanned {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteNode removes a node and its dependent in-memory data. Returns false if

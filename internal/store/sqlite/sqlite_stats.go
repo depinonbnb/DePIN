@@ -149,8 +149,8 @@ func (s *SQLiteStore) AwardUptimePoints(nodeID string, minutesOnline uint64) {
 	if pointsPerInterval < 1 {
 		pointsPerInterval = 1
 	}
-	// Rate-cap points per node per window (no-op unless enabled at startup).
-	pointsPerInterval = pointscap.Allow(nodeID, pointsPerInterval)
+	// Tier-aware rate cap per node per window (no-op unless enabled at startup).
+	pointsPerInterval = pointscap.Allow(nodeID, pointsPerInterval, types.NodeType(nodeType).PointsCapPerWindow())
 
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE nodes
@@ -180,6 +180,32 @@ func (s *SQLiteStore) SeedNode(nodeID string, totalPoints, verifications, uptime
 		return false
 	}
 	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// SetNodeIP records the network address a node registered from.
+func (s *SQLiteStore) SetNodeIP(nodeID, ip string) {
+	if _, err := s.db.ExecContext(s.ctx,
+		`UPDATE nodes SET registered_ip = ? WHERE id = ?`, ip, nodeID,
+	); err != nil {
+		slog.Default().Error("sqlite: SetNodeIP", "node_id", nodeID, "error", err)
+	}
+}
+
+// HasActiveNodeFromIP reports whether an active, non-banned node already exists
+// from the given IP.
+func (s *SQLiteStore) HasActiveNodeFromIP(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	var n int
+	if err := s.db.QueryRowContext(s.ctx,
+		`SELECT COUNT(*) FROM nodes WHERE registered_ip = ? AND is_active = 1 AND cheat_status != ?`,
+		ip, string(types.StatusBanned),
+	).Scan(&n); err != nil {
+		slog.Default().Error("sqlite: HasActiveNodeFromIP", "error", err)
+		return false
+	}
 	return n > 0
 }
 

@@ -142,6 +142,14 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 		return
 	}
 
+	// One node per network address (the "one node per location, for now" rule).
+	// Checked before consuming the nonce so a rejected attempt doesn't burn it.
+	clientIP := c.ClientIP()
+	if h.store.HasActiveNodeFromIP(clientIP) {
+		c.JSON(http.StatusConflict, gin.H{"error": "a node is already registered from this network address (one node per address)"})
+		return
+	}
+
 	// Phase 3: anti-replay. After signature verification, consume the nonce.
 	// 10-minute TTL matches the timestamp drift window times two so a slow
 	// client can't legitimately submit twice within the window.
@@ -159,6 +167,9 @@ func (h *Handlers) RegisterNode(c *gin.Context) {
 		req.RPCEndpoint,
 		req.AuthToken,
 	)
+	if clientIP != "" {
+		h.store.SetNodeIP(node.ID, clientIP)
+	}
 
 	c.JSON(http.StatusOK, RegisterResponse{
 		Success: true,

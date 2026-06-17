@@ -183,6 +183,29 @@ func resolveTrustedRPCs() []string {
 	}
 }
 
+// resolveOpbnbRPCs returns the reference RPC endpoints used to verify opBNB node
+// tiers. opBNB is a separate chain, so its challenges must be checked against
+// opBNB nodes, not BSC. Override with OPBNB_TRUSTED_RPCS (comma-separated).
+func resolveOpbnbRPCs() []string {
+	if raw := strings.TrimSpace(os.Getenv("OPBNB_TRUSTED_RPCS")); raw != "" {
+		parts := strings.Split(raw, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []string{
+		"https://opbnb-mainnet-rpc.bnbchain.org",
+		"https://opbnb-rpc.publicnode.com",
+		"https://1rpc.io/opbnb",
+	}
+}
+
 // resolveStoreBackend reads DATABASE_URL (preferred) and DB_PATH (legacy fallback
 // from ADR-0006) and decides which store to construct. Returns the constructed
 // Store and a human-readable description for logging.
@@ -292,8 +315,8 @@ func main() {
 	configureLogger()
 
 	// Cap points per node per rolling window so a fast-looping prover can't farm
-	// faster than intended (anti-abuse). 10 points / 10 minutes.
-	pointscap.SetLimits(10, 10*time.Minute)
+	// faster than intended (anti-abuse). Per-tier ceilings, 10-minute window.
+	pointscap.Enable(10 * time.Minute)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -325,6 +348,7 @@ func main() {
 	}
 
 	verifier := verification.NewVerifier(trustedRPCs)
+	verifier.SetOpbnbRPC(resolveOpbnbRPCs())
 
 	// Set up signal-driven shutdown context. Use signal.NotifyContext so the
 	// returned context is cancelled on SIGINT/SIGTERM and we can drive

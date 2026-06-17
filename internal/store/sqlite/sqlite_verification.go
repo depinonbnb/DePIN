@@ -168,13 +168,13 @@ func (s *SQLiteStore) RecordVerificationResult(result *types.VerificationResult)
 	if result.Passed {
 		challengePoints := types.NodeType(nodeTypeStr).PointsPerChallenge()
 		// Token gate: withhold the payout for wallets below the minimum balance
-		// while still recording the pass (count + last_verified_at). Banned
-		// nodes earn nothing.
-		if result.SkipPointsAward || cheatStatusStr == string(types.StatusBanned) {
+		// while still recording the pass (count + last_verified_at). Flagged and
+		// banned nodes earn nothing.
+		if result.SkipPointsAward || types.EarningBlocked(types.CheatStatus(cheatStatusStr)) {
 			challengePoints = 0
 		}
-		// Rate-cap points per node per window (no-op unless enabled at startup).
-		challengePoints = pointscap.Allow(result.NodeID, challengePoints)
+		// Tier-aware rate cap per node per window (no-op unless enabled at startup).
+		challengePoints = pointscap.Allow(result.NodeID, challengePoints, types.NodeType(nodeTypeStr).PointsCapPerWindow())
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE nodes SET
 				total_challenges_passed = total_challenges_passed + 1,

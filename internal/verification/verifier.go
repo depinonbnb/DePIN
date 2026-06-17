@@ -26,6 +26,7 @@ type Verifier struct {
 	// reached. Callers below treat that as ABORT (skip + re-queue), NOT as
 	// cheating.
 	trustedRPC        *rpc.QuorumClient
+	opbnbRPC          *rpc.QuorumClient
 	generator         *challenge.Generator
 	pendingChallenges map[string]*pendingChallenge
 	mu                sync.RWMutex
@@ -49,6 +50,29 @@ func (v *Verifier) TrustedRPC() *rpc.QuorumClient {
 	return v.trustedRPC
 }
 
+// SetOpbnbRPC configures the reference quorum used to verify opBNB node tiers.
+// opBNB is a different chain from BSC, so without this an opBNB node's correct
+// answers wouldn't match the BSC reference and it would fail every challenge.
+// Call once at startup.
+func (v *Verifier) SetOpbnbRPC(endpoints []string) {
+	if len(endpoints) > 0 {
+		v.opbnbRPC = rpc.NewQuorum(endpoints)
+	}
+}
+
+// quorumFor returns the reference quorum for the node's chain: opBNB tiers use
+// the opBNB quorum when configured; everything else (and the fallback) uses the
+// BSC quorum.
+func (v *Verifier) quorumFor(nt types.NodeType) *rpc.QuorumClient {
+	switch nt {
+	case types.OpbnbFull, types.OpbnbFast:
+		if v.opbnbRPC != nil {
+			return v.opbnbRPC
+		}
+	}
+	return v.trustedRPC
+}
+
 // Create a challenge for a node
 // We query our trusted node first so we know the right answer.
 // Quorum-RPC abort path: if the trusted quorum can't agree (response.Error
@@ -58,8 +82,8 @@ func (v *Verifier) TrustedRPC() *rpc.QuorumClient {
 func (v *Verifier) CreateChallenge(node *types.NodeRegistration) (*types.Challenge, error) {
 	ch := v.generator.GenerateChallenge(node.ID, node.NodeType)
 
-	// Get the answer from our trusted node
-	response := v.trustedRPC.ExecuteChallenge(ch)
+	// Get the answer from our trusted node (per-chain quorum).
+	response := v.quorumFor(node.NodeType).ExecuteChallenge(ch)
 	if !response.Success {
 		if response.Error == rpc.QuorumNoMajority {
 			slog.Warn("verification: trusted RPC quorum disagreement; aborting challenge create",
@@ -228,8 +252,8 @@ func (v *Verifier) VerifyExposedRPC(node *types.NodeRegistration) *types.Verific
 	// Generate a challenge
 	ch := v.generator.GenerateChallenge(node.ID, node.NodeType)
 
-	// Get the right answer from our trusted node
-	expectedResponse := v.trustedRPC.ExecuteChallenge(ch)
+	// Get the right answer from our trusted node (per-chain quorum).
+	expectedResponse := v.quorumFor(node.NodeType).ExecuteChallenge(ch)
 	if !expectedResponse.Success {
 		// ADR-0009 abort path: a "no quorum" answer means the trusted side
 		// disagreed with itself. We MUST NOT bump the operator's warning

@@ -86,6 +86,14 @@ type Store interface {
 	// Returns false if the node was not found.
 	DeleteNode(nodeID string) bool
 
+	// SetNodeIP records the network address a node registered from (one-node-
+	// per-IP enforcement).
+	SetNodeIP(nodeID, ip string)
+
+	// HasActiveNodeFromIP reports whether an active, non-banned node already
+	// exists from the given IP. Empty ip always returns false.
+	HasActiveNodeFromIP(ip string) bool
+
 	// ConsumeNonce records (wallet, nonce) with a TTL and returns true if the
 	// pair is fresh (just recorded). It returns false if the same (wallet,
 	// nonce) is still present and unexpired — that is the replay-detection

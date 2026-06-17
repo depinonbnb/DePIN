@@ -66,6 +66,25 @@ func (n NodeType) PointsPerChallenge() uint64 {
 	}
 }
 
+// PointsCapPerWindow is the maximum points a node of this tier may earn within
+// one anti-farm window (see pointscap). Scaled by tier so harder nodes keep a
+// higher ceiling — roughly 2x the hourly rate, generous enough for honest bursts
+// but low enough to stop a fast-looping prover from farming.
+func (n NodeType) PointsCapPerWindow() uint64 {
+	switch n {
+	case BscArchive:
+		return 20
+	case BscFull:
+		return 12
+	case BscFast, OpbnbFull:
+		return 8
+	case OpbnbFast:
+		return 6
+	default:
+		return 10
+	}
+}
+
 func (n NodeType) MinUptimePercent() uint8 {
 	switch n {
 	case BscArchive, BscFull:
@@ -117,23 +136,32 @@ const (
 	StatusBanned  CheatStatus = "banned"  // Confirmed cheating
 )
 
+// EarningBlocked reports whether a node in this status should be denied all
+// point awards (uptime and challenge). Flagged and banned both earn nothing.
+func EarningBlocked(s CheatStatus) bool {
+	return s == StatusFlagged || s == StatusBanned
+}
+
 // A registered node
 type NodeRegistration struct {
-	ID                    string             `json:"id"`
-	WalletAddress         string             `json:"wallet_address"`
-	NodeType              NodeType           `json:"node_type"`
-	VerificationMethod    VerificationMethod `json:"verification_method"`
-	RPCEndpoint           string             `json:"rpc_endpoint,omitempty"`
-	AuthToken             string             `json:"auth_token,omitempty"`
-	RegisteredAt          int64              `json:"registered_at"`
-	LastVerifiedAt        int64              `json:"last_verified_at"`
-	LastHeartbeatAt       int64              `json:"last_heartbeat_at"`
-	TotalChallengesPassed uint64             `json:"total_challenges_passed"`
-	TotalChallengesFailed uint64             `json:"total_challenges_failed"`
-	TotalUptimeMinutes    uint64             `json:"total_uptime_minutes"`
-	TotalPoints           uint64             `json:"total_points"`
-	IsActive              bool               `json:"is_active"`
-	IsSynced              bool               `json:"is_synced"`
+	ID                 string             `json:"id"`
+	WalletAddress      string             `json:"wallet_address"`
+	NodeType           NodeType           `json:"node_type"`
+	VerificationMethod VerificationMethod `json:"verification_method"`
+	RPCEndpoint        string             `json:"rpc_endpoint,omitempty"`
+	AuthToken          string             `json:"auth_token,omitempty"`
+	// RegisteredIP is the network address the node registered from, used for the
+	// one-node-per-IP rule. Never serialized (privacy).
+	RegisteredIP          string `json:"-"`
+	RegisteredAt          int64  `json:"registered_at"`
+	LastVerifiedAt        int64  `json:"last_verified_at"`
+	LastHeartbeatAt       int64  `json:"last_heartbeat_at"`
+	TotalChallengesPassed uint64 `json:"total_challenges_passed"`
+	TotalChallengesFailed uint64 `json:"total_challenges_failed"`
+	TotalUptimeMinutes    uint64 `json:"total_uptime_minutes"`
+	TotalPoints           uint64 `json:"total_points"`
+	IsActive              bool   `json:"is_active"`
+	IsSynced              bool   `json:"is_synced"`
 
 	// Anti-cheat
 	CheatStatus      CheatStatus `json:"cheat_status"`
