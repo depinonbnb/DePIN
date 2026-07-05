@@ -14,9 +14,9 @@ Users download the official BNB node from [bnb-chain/bsc](https://github.com/bnb
 
 **DEPIN** on BNB Smart Chain (mainnet). Operators must hold **1,000,000 DEPIN** in their wallet to accrue points — the balance is re-checked on-chain every reward cycle.
 
-- **Contract:** `0x426326e876ad01fd99db898604c16c0628da7777`
+- **Contract:** `0xd606d286f1efe1f145609a4bf19b5cdfad01ffff`
 - **Decimals:** 18
-- **Explorer:** https://bscscan.com/token/0x426326e876ad01fd99db898604c16c0628da7777
+- **Explorer:** https://bscscan.com/token/0xd606d286f1efe1f145609a4bf19b5cdfad01ffff
 
 Set `TOKEN_CONTRACT_ADDRESS` to override (defaults to the address above); `TOKEN_CONTRACT_ADDRESS=off` disables the gate.
 
